@@ -1,7 +1,7 @@
 let SAND_VERSION = "0.1.0"
 let MANIFEST_NAME = "grain.yaml"
 let LOCK_NAME = "sand-lock.yaml"
-let DEFAULT_MAIN = "index.praia"
+let DEFAULT_MAIN = "main.praia"
 let EXT_GRAINS_DIR = "ext_grains"
 
 func home() {

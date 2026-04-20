@@ -67,7 +67,13 @@ func cmdInit(args) {
   let name = path.basename(dir)
   let m = manifest.create(name)
   manifest.write(dir, m)
-  printer.success("Created grain.yaml for '%{name}'")
+
+  let mainPath = path.join(dir, config.DEFAULT_MAIN)
+  if (!sys.exists(mainPath)) {
+    sys.write(mainPath, "print('Hello from %{name}!')\n")
+  }
+
+  printer.success("Created grain.yaml and %{config.DEFAULT_MAIN} for '%{name}'")
 }
 
 func installGrain(spec, isGlobal) {

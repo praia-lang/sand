@@ -84,7 +84,7 @@ Praia resolves grains in this order:
 
 ## Project manifest
 
-Run `sand init` to create a `grain.yaml`:
+Run `sand init` to create a `grain.yaml` and `main.praia`:
 
 ```yaml
 name: my-project
@@ -92,7 +92,7 @@ version: 0.1.0
 description: A short description
 author: username
 license: MIT
-main: index.praia
+main: main.praia
 dependencies:
   router: github.com/user/router@0.1.0
   utils: github.com/user/utils
@@ -109,7 +109,7 @@ Single-file grain:
 ```
 mygrain/
   grain.yaml
-  index.praia
+  main.praia
 ```
 
 Multi-file grain:
@@ -117,12 +117,12 @@ Multi-file grain:
 ```
 mygrain/
   grain.yaml
-  index.praia      <- entry point
+  main.praia       <- entry point
   helpers.praia
   utils.praia
 ```
 
-The `main` field in `grain.yaml` specifies the entry file (defaults to `index.praia`). The entire directory is copied on install, so relative imports between files work.
+The `main` field in `grain.yaml` specifies the entry file (defaults to `main.praia`). The entire directory is copied on install, so relative imports between files work.
 
 Tag releases with git tags for versioned installs:
 
