@@ -10,13 +10,47 @@ func printUsage() {
   print("  sand init                  Create a grain.yaml in the current directory")
   print("  sand install               Install all dependencies from grain.yaml")
   print("  sand install <url>         Install a grain from a Git URL")
-  print("  sand remove <name>         Remove an installed grain")
-  print("  sand list                  List installed grains")
+  print("  sand install --global <url>  Install a grain globally")
+  print("  sand remove <name>         Remove a locally installed grain")
+  print("  sand remove --global <name>  Remove a globally installed grain")
+  print("  sand list                  List locally installed grains")
+  print("  sand list --global         List globally installed grains")
   print("  sand info <name>           Show info about an installed grain")
   print("  sand --version             Print sand version")
   print("  sand help                  Show this help")
   print("")
   print("  URL format: github.com/user/repo or github.com/user/repo@0.2.0")
+  print("")
+  print("  Grains are installed to ext_grains/ by default.")
+  print("  Use --global to install to ~/.praia/grains/ instead.")
+}
+
+// Parse --global flag from args, returns {global: bool, rest: []}
+func parseFlags(args) {
+  let isGlobal = false
+  let rest = []
+  for (arg in args) {
+    if (arg == "--global" || arg == "-g") {
+      isGlobal = true
+    } else {
+      push(rest, arg)
+    }
+  }
+  return { global: isGlobal, rest: rest }
+}
+
+func getTargetDir(isGlobal) {
+  if (isGlobal) {
+    return config.globalGrainsDir()
+  }
+  return config.localGrainsDir()
+}
+
+func getLockFile(isGlobal) {
+  if (isGlobal) {
+    return config.globalLockFile()
+  }
+  return config.localLockFile()
 }
 
 // ── Commands ──
@@ -36,13 +70,14 @@ func cmdInit(args) {
   printer.success("Created grain.yaml for '%{name}'")
 }
 
-func installGrain(spec) {
+func installGrain(spec, isGlobal) {
   let parsed = git.parseSpec(spec)
   let name = parsed.name
-  let grainsDir = config.grainsDir()
+  let targetDir = getTargetDir(isGlobal)
+  let lockFile = getLockFile(isGlobal)
 
   // Check if already installed
-  let existing = registry.get(name)
+  let existing = registry.get(lockFile, name)
   if (existing) {
     printer.warn("'%{name}' is already installed (source: %{existing.source})")
     printer.info("Use 'sand remove %{name}' first to reinstall")
@@ -62,7 +97,7 @@ func installGrain(spec) {
       git.checkout(cloneDir, parsed.version)
     }
 
-    // Determine main file from grain's own manifest
+    // Determine main file from grain's manifest
     let mainFile = config.DEFAULT_MAIN
     let grainManifestPath = path.join(cloneDir, config.MANIFEST_NAME)
     let grainManifest = nil
@@ -73,57 +108,77 @@ func installGrain(spec) {
       }
     }
 
-    // Copy main file to grains directory
-    let srcFile = path.join(cloneDir, mainFile)
-    ensure (sys.exists(srcFile)) else {
+    // Verify entry file exists
+    let srcEntry = path.join(cloneDir, mainFile)
+    ensure (sys.exists(srcEntry)) else {
       throw "Entry file '%{mainFile}' not found in grain repository"
     }
 
-    let destFile = path.join(grainsDir, "%{name}.praia")
-    let content = sys.read(srcFile)
-    sys.write(destFile, content)
+    // Ensure target directory exists
+    config.ensureDir(targetDir)
+
+    // Copy the entire grain as a directory
+    let destDir = path.join(targetDir, name)
+    if (sys.exists(destDir)) {
+      sys.remove(destDir)
+    }
+    sys.copy(cloneDir, destDir)
+
+    // Remove .git directory from the copy
+    let dotGit = path.join(destDir, ".git")
+    if (sys.exists(dotGit)) {
+      sys.remove(dotGit)
+    }
 
     // Register in lock file
     let version = parsed.version
     if (!version) { version = "latest" }
     let today = sys.exec("date +%Y-%m-%d").strip()
-    registry.add(name, {
+    registry.add(lockFile, name, {
       source: spec,
       version: version,
       url: parsed.url,
       installed: today
     })
 
-    printer.success("Installed %{name}@%{version}")
+    let location = "ext_grains/"
+    if (isGlobal) { location = "~/.praia/grains/" }
+    printer.success("Installed %{name}@%{version} -> %{location}%{name}/")
 
     // Install transitive dependencies
-    if (grainManifest && grainManifest.dependencies) {
-      let depKeys = keys(grainManifest.dependencies)
-      for (depName in depKeys) {
-        let depSource = grainManifest.dependencies[depName]
-        if (!registry.get(depName)) {
-          printer.info("  Installing dependency: %{depName}")
-          installGrain(depSource)
+    try {
+      if (grainManifest && grainManifest.dependencies) {
+        let depKeys = keys(grainManifest.dependencies)
+        for (depName in depKeys) {
+          let depSource = grainManifest.dependencies[depName]
+          if (!registry.get(lockFile, depName)) {
+            printer.info("  Installing dependency: %{depName}")
+            installGrain(str(depSource), isGlobal)
+          }
         }
       }
-    }
+    } catch (e) {}
   } catch (err) {
     printer.error("Failed to install %{name}: %{err}")
     sys.exit(1)
   }
 
   // Cleanup temp dir
-  try { sys.exec("rm -rf %{tmpDir}") } catch (e) {}
+  try { sys.remove(tmpDir) } catch (e) {}
 
-  // Add to current project's grain.yaml if it exists
-  let cwd = sys.cwd()
-  if (sys.exists(path.join(cwd, config.MANIFEST_NAME))) {
-    manifest.addDep(cwd, name, spec)
-    printer.info("Added %{name} to grain.yaml dependencies")
+  // Add to current project's grain.yaml if it exists and not global
+  if (!isGlobal) {
+    let cwd = sys.cwd()
+    if (sys.exists(path.join(cwd, config.MANIFEST_NAME))) {
+      try {
+        manifest.addDep(cwd, name, spec)
+        printer.info("Added %{name} to grain.yaml dependencies")
+      } catch (e) {}
+    }
   }
 }
 
-func installFromManifest() {
+func installFromManifest(isGlobal) {
   let cwd = sys.cwd()
   let m = manifest.read(cwd)
 
@@ -138,14 +193,15 @@ func installFromManifest() {
     return
   }
 
+  let lockFile = getLockFile(isGlobal)
   printer.header("Installing dependencies for %{m.name}...")
 
   for (depName in depKeys) {
     let source = m.dependencies[depName]
-    if (registry.get(depName)) {
+    if (registry.get(lockFile, depName)) {
       printer.info("  %{depName} already installed, skipping")
     } else {
-      installGrain(str(source))
+      installGrain(str(source), isGlobal)
     }
   }
 
@@ -153,58 +209,75 @@ func installFromManifest() {
 }
 
 func cmdInstall(args) {
-  config.ensureGrainsDir()
+  let flags = parseFlags(args)
 
-  if (len(args) == 0) {
-    installFromManifest()
+  if (len(flags.rest) == 0) {
+    installFromManifest(flags.global)
   } else {
-    for (spec in args) {
-      installGrain(spec)
+    for (spec in flags.rest) {
+      installGrain(spec, flags.global)
     }
   }
 }
 
 func cmdRemove(args) {
-  ensure (len(args) > 0) else {
-    printer.error("Usage: sand remove <name>")
+  let flags = parseFlags(args)
+
+  ensure (len(flags.rest) > 0) else {
+    printer.error("Usage: sand remove [--global] <name>")
     sys.exit(1)
   }
 
-  let name = args[0]
-  let grainsDir = config.grainsDir()
-  let grainFile = path.join(grainsDir, "%{name}.praia")
+  let name = flags.rest[0]
+  let targetDir = getTargetDir(flags.global)
+  let lockFile = getLockFile(flags.global)
 
-  let existing = registry.get(name)
+  let existing = registry.get(lockFile, name)
   if (!existing) {
     printer.error("Grain '%{name}' is not installed")
     sys.exit(1)
   }
 
+  // Remove the grain directory
+  let grainDir = path.join(targetDir, name)
+  if (sys.exists(grainDir)) {
+    sys.remove(grainDir)
+  }
+
+  // Also remove single-file grain if it exists
+  let grainFile = path.join(targetDir, "%{name}.praia")
   if (sys.exists(grainFile)) {
     sys.remove(grainFile)
   }
 
-  registry.remove(name)
+  registry.remove(lockFile, name)
   printer.success("Removed %{name}")
 
-  // Also remove from current project's grain.yaml if present
-  let cwd = sys.cwd()
-  if (sys.exists(path.join(cwd, config.MANIFEST_NAME))) {
-    manifest.removeDep(cwd, name)
-    printer.info("Removed %{name} from grain.yaml dependencies")
+  // Also remove from current project's grain.yaml if present and local
+  if (!flags.global) {
+    let cwd = sys.cwd()
+    if (sys.exists(path.join(cwd, config.MANIFEST_NAME))) {
+      manifest.removeDep(cwd, name)
+      printer.info("Removed %{name} from grain.yaml dependencies")
+    }
   }
 }
 
-func cmdList() {
-  let grains = registry.list()
+func cmdList(args) {
+  let flags = parseFlags(args)
+  let lockFile = getLockFile(flags.global)
+  let grains = registry.list(lockFile)
   let grainKeys = keys(grains)
 
+  let scope = "local"
+  if (flags.global) { scope = "global" }
+
   if (len(grainKeys) == 0) {
-    printer.info("No grains installed")
+    printer.info("No %{scope} grains installed")
     return
   }
 
-  printer.header("Installed grains:")
+  printer.header("Installed grains (%{scope}):")
   for (name in grainKeys) {
     let info = grains[name]
     let version = info.version
@@ -216,13 +289,22 @@ func cmdList() {
 }
 
 func cmdInfo(args) {
-  ensure (len(args) > 0) else {
+  let flags = parseFlags(args)
+
+  ensure (len(flags.rest) > 0) else {
     printer.error("Usage: sand info <name>")
     sys.exit(1)
   }
 
-  let name = args[0]
-  let info = registry.get(name)
+  let name = flags.rest[0]
+
+  // Check local first, then global
+  let info = registry.get(config.localLockFile(), name)
+  let scope = "local"
+  if (!info) {
+    info = registry.get(config.globalLockFile(), name)
+    scope = "global"
+  }
 
   if (!info) {
     printer.error("Grain '%{name}' is not installed")
@@ -233,13 +315,9 @@ func cmdInfo(args) {
   print("  version:   %{info.version}")
   print("  source:    %{info.source}")
   print("  url:       %{info.url}")
+  print("  scope:     %{scope}")
   if (info.installed) {
     print("  installed: %{info.installed}")
-  }
-
-  let grainFile = path.join(config.grainsDir(), "%{name}.praia")
-  if (sys.exists(grainFile)) {
-    print("  file:      %{grainFile}")
   }
 }
 
@@ -253,7 +331,6 @@ func run(args) {
 
   let cmd = args[0]
 
-  // Remaining args after the command
   let rest = []
   for (i in 1..len(args)) {
     push(rest, args[i])
@@ -262,7 +339,7 @@ func run(args) {
   if (cmd == "init") { cmdInit(rest) }
   elif (cmd == "install" || cmd == "i") { cmdInstall(rest) }
   elif (cmd == "remove" || cmd == "rm") { cmdRemove(rest) }
-  elif (cmd == "list" || cmd == "ls") { cmdList() }
+  elif (cmd == "list" || cmd == "ls") { cmdList(rest) }
   elif (cmd == "info") { cmdInfo(rest) }
   elif (cmd == "--version" || cmd == "-v") { print("sand v%{config.SAND_VERSION}") }
   elif (cmd == "help" || cmd == "--help" || cmd == "-h") { printUsage() }

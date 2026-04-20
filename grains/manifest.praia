@@ -1,5 +1,13 @@
 use "./config"
 
+func has(m, key) {
+  let ks = keys(m)
+  for (k in ks) {
+    if (k == key) { return true }
+  }
+  return false
+}
+
 func read(dir) {
   let filepath = path.join(dir, config.MANIFEST_NAME)
   ensure (sys.exists(filepath)) else {
@@ -14,20 +22,20 @@ func write(dir, m) {
   let lines = ""
   lines = lines + "name: %{m.name}\n"
   lines = lines + "version: %{m.version}\n"
-  if (m.description) {
+  if (has(m, "description") && m.description) {
     lines = lines + "description: %{m.description}\n"
   }
-  if (m.author) {
+  if (has(m, "author") && m.author) {
     lines = lines + "author: %{m.author}\n"
   }
-  if (m.license) {
+  if (has(m, "license") && m.license) {
     lines = lines + "license: %{m.license}\n"
   }
-  if (m.main) {
+  if (has(m, "main") && m.main) {
     lines = lines + "main: %{m.main}\n"
   }
   lines = lines + "dependencies:\n"
-  if (m.dependencies) {
+  if (has(m, "dependencies") && m.dependencies) {
     let depKeys = keys(m.dependencies)
     if (len(depKeys) > 0) {
       for (k in depKeys) {
@@ -52,7 +60,7 @@ func create(name) {
 
 func addDep(dir, name, source) {
   let m = read(dir)
-  if (!m.dependencies) {
+  if (!has(m, "dependencies") || !m.dependencies) {
     m.dependencies = {}
   }
   m.dependencies[name] = source
@@ -61,8 +69,7 @@ func addDep(dir, name, source) {
 
 func removeDep(dir, name) {
   let m = read(dir)
-  if (m.dependencies) {
-    // Rebuild without the removed key
+  if (has(m, "dependencies") && m.dependencies) {
     let newDeps = {}
     let depKeys = keys(m.dependencies)
     for (k in depKeys) {

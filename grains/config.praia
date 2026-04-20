@@ -1,24 +1,36 @@
 let SAND_VERSION = "0.1.0"
 let MANIFEST_NAME = "grain.yaml"
+let LOCK_NAME = "sand-lock.yaml"
 let DEFAULT_MAIN = "index.praia"
+let EXT_GRAINS_DIR = "ext_grains"
 
 func home() {
   return sys.env("HOME")
 }
 
-func grainsDir() {
+func globalGrainsDir() {
   return path.join(home(), ".praia", "grains")
 }
 
-func lockFile() {
-  return path.join(grainsDir(), ".sand-lock.yaml")
+func globalLockFile() {
+  return path.join(globalGrainsDir(), ".sand-lock.yaml")
 }
 
-func ensureGrainsDir() {
-  let dir = grainsDir()
+func localGrainsDir() {
+  return path.join(sys.cwd(), EXT_GRAINS_DIR)
+}
+
+func localLockFile() {
+  return path.join(sys.cwd(), LOCK_NAME)
+}
+
+func ensureDir(dir) {
   if (!sys.exists(dir)) {
     sys.mkdir(dir)
   }
 }
 
-export { SAND_VERSION, MANIFEST_NAME, DEFAULT_MAIN, home, grainsDir, lockFile, ensureGrainsDir }
+export {
+  SAND_VERSION, MANIFEST_NAME, LOCK_NAME, DEFAULT_MAIN, EXT_GRAINS_DIR,
+  home, globalGrainsDir, globalLockFile, localGrainsDir, localLockFile, ensureDir
+}

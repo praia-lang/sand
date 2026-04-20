@@ -1,11 +1,8 @@
-use "./config"
-
-func load() {
-  let filepath = config.lockFile()
-  if (!sys.exists(filepath)) {
+func load(lockPath) {
+  if (!sys.exists(lockPath)) {
     return { grains: {} }
   }
-  let content = sys.read(filepath)
+  let content = sys.read(lockPath)
   if (len(content.strip()) == 0) {
     return { grains: {} }
   }
@@ -19,10 +16,7 @@ func load() {
   return data
 }
 
-func save(lock) {
-  config.ensureGrainsDir()
-  let filepath = config.lockFile()
-  // Manual YAML serialization for the lock file
+func save(lockPath, lock) {
   let lines = "grains:\n"
   let grainKeys = keys(lock.grains)
   for (name in grainKeys) {
@@ -35,17 +29,17 @@ func save(lock) {
       lines = lines + "    installed: %{info.installed}\n"
     }
   }
-  sys.write(filepath, lines)
+  sys.write(lockPath, lines)
 }
 
-func add(name, info) {
-  let lock = load()
+func add(lockPath, name, info) {
+  let lock = load(lockPath)
   lock.grains[name] = info
-  save(lock)
+  save(lockPath, lock)
 }
 
-func remove(name) {
-  let lock = load()
+func remove(lockPath, name) {
+  let lock = load(lockPath)
   let newGrains = {}
   let grainKeys = keys(lock.grains)
   for (k in grainKeys) {
@@ -54,11 +48,11 @@ func remove(name) {
     }
   }
   lock.grains = newGrains
-  save(lock)
+  save(lockPath, lock)
 }
 
-func get(name) {
-  let lock = load()
+func get(lockPath, name) {
+  let lock = load(lockPath)
   let grainKeys = keys(lock.grains)
   for (k in grainKeys) {
     if (k == name) {
@@ -68,8 +62,8 @@ func get(name) {
   return nil
 }
 
-func list() {
-  let lock = load()
+func list(lockPath) {
+  let lock = load(lockPath)
   return lock.grains
 }
 
