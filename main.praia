@@ -1,0 +1,8 @@
+use "./grains/cli"
+
+try {
+  cli.run(sys.args)
+} catch (err) {
+  print("\x1b[31merror\x1b[0m %{err}")
+  sys.exit(1)
+}

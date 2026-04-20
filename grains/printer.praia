@@ -1,0 +1,14 @@
+let RESET  = "\x1b[0m"
+let GREEN  = "\x1b[32m"
+let RED    = "\x1b[31m"
+let YELLOW = "\x1b[33m"
+let CYAN   = "\x1b[36m"
+let BOLD   = "\x1b[1m"
+
+func success(msg) { print("%{GREEN}ok%{RESET} %{msg}") }
+func error(msg)   { print("%{RED}error%{RESET} %{msg}") }
+func warn(msg)    { print("%{YELLOW}warn%{RESET} %{msg}") }
+func info(msg)    { print("%{CYAN}info%{RESET} %{msg}") }
+func header(msg)  { print("%{BOLD}%{msg}%{RESET}") }
+
+export { success, error, warn, info, header }

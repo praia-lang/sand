@@ -1,0 +1,277 @@
+use "./config"
+use "./manifest"
+use "./git"
+use "./registry"
+use "./printer"
+
+func printUsage() {
+  printer.header("sand v%{config.SAND_VERSION} - package manager for Praia")
+  print("")
+  print("  sand init                  Create a grain.yaml in the current directory")
+  print("  sand install               Install all dependencies from grain.yaml")
+  print("  sand install <url>         Install a grain from a Git URL")
+  print("  sand remove <name>         Remove an installed grain")
+  print("  sand list                  List installed grains")
+  print("  sand info <name>           Show info about an installed grain")
+  print("  sand --version             Print sand version")
+  print("  sand help                  Show this help")
+  print("")
+  print("  URL format: github.com/user/repo or github.com/user/repo@0.2.0")
+}
+
+// ── Commands ──
+
+func cmdInit(args) {
+  let dir = sys.cwd()
+  let manifestPath = path.join(dir, config.MANIFEST_NAME)
+
+  if (sys.exists(manifestPath)) {
+    printer.warn("grain.yaml already exists in this directory")
+    return
+  }
+
+  let name = path.basename(dir)
+  let m = manifest.create(name)
+  manifest.write(dir, m)
+  printer.success("Created grain.yaml for '%{name}'")
+}
+
+func installGrain(spec) {
+  let parsed = git.parseSpec(spec)
+  let name = parsed.name
+  let grainsDir = config.grainsDir()
+
+  // Check if already installed
+  let existing = registry.get(name)
+  if (existing) {
+    printer.warn("'%{name}' is already installed (source: %{existing.source})")
+    printer.info("Use 'sand remove %{name}' first to reinstall")
+    return
+  }
+
+  printer.info("Installing %{name} from %{parsed.url}...")
+
+  // Clone to temp dir
+  let tmpDir = sys.exec("mktemp -d").strip()
+  let cloneDir = path.join(tmpDir, name)
+
+  try {
+    git.clone(parsed.url, cloneDir)
+
+    if (parsed.version) {
+      git.checkout(cloneDir, parsed.version)
+    }
+
+    // Determine main file from grain's own manifest
+    let mainFile = config.DEFAULT_MAIN
+    let grainManifestPath = path.join(cloneDir, config.MANIFEST_NAME)
+    let grainManifest = nil
+    if (sys.exists(grainManifestPath)) {
+      grainManifest = manifest.read(cloneDir)
+      if (grainManifest.main) {
+        mainFile = grainManifest.main
+      }
+    }
+
+    // Copy main file to grains directory
+    let srcFile = path.join(cloneDir, mainFile)
+    ensure (sys.exists(srcFile)) else {
+      throw "Entry file '%{mainFile}' not found in grain repository"
+    }
+
+    let destFile = path.join(grainsDir, "%{name}.praia")
+    let content = sys.read(srcFile)
+    sys.write(destFile, content)
+
+    // Register in lock file
+    let version = parsed.version
+    if (!version) { version = "latest" }
+    let today = sys.exec("date +%Y-%m-%d").strip()
+    registry.add(name, {
+      source: spec,
+      version: version,
+      url: parsed.url,
+      installed: today
+    })
+
+    printer.success("Installed %{name}@%{version}")
+
+    // Install transitive dependencies
+    if (grainManifest && grainManifest.dependencies) {
+      let depKeys = keys(grainManifest.dependencies)
+      for (depName in depKeys) {
+        let depSource = grainManifest.dependencies[depName]
+        if (!registry.get(depName)) {
+          printer.info("  Installing dependency: %{depName}")
+          installGrain(depSource)
+        }
+      }
+    }
+  } catch (err) {
+    printer.error("Failed to install %{name}: %{err}")
+    sys.exit(1)
+  }
+
+  // Cleanup temp dir
+  try { sys.exec("rm -rf %{tmpDir}") } catch (e) {}
+
+  // Add to current project's grain.yaml if it exists
+  let cwd = sys.cwd()
+  if (sys.exists(path.join(cwd, config.MANIFEST_NAME))) {
+    manifest.addDep(cwd, name, spec)
+    printer.info("Added %{name} to grain.yaml dependencies")
+  }
+}
+
+func installFromManifest() {
+  let cwd = sys.cwd()
+  let m = manifest.read(cwd)
+
+  if (!m.dependencies) {
+    printer.info("No dependencies to install")
+    return
+  }
+
+  let depKeys = keys(m.dependencies)
+  if (len(depKeys) == 0) {
+    printer.info("No dependencies to install")
+    return
+  }
+
+  printer.header("Installing dependencies for %{m.name}...")
+
+  for (depName in depKeys) {
+    let source = m.dependencies[depName]
+    if (registry.get(depName)) {
+      printer.info("  %{depName} already installed, skipping")
+    } else {
+      installGrain(str(source))
+    }
+  }
+
+  printer.success("All dependencies installed")
+}
+
+func cmdInstall(args) {
+  config.ensureGrainsDir()
+
+  if (len(args) == 0) {
+    installFromManifest()
+  } else {
+    for (spec in args) {
+      installGrain(spec)
+    }
+  }
+}
+
+func cmdRemove(args) {
+  ensure (len(args) > 0) else {
+    printer.error("Usage: sand remove <name>")
+    sys.exit(1)
+  }
+
+  let name = args[0]
+  let grainsDir = config.grainsDir()
+  let grainFile = path.join(grainsDir, "%{name}.praia")
+
+  let existing = registry.get(name)
+  if (!existing) {
+    printer.error("Grain '%{name}' is not installed")
+    sys.exit(1)
+  }
+
+  if (sys.exists(grainFile)) {
+    sys.remove(grainFile)
+  }
+
+  registry.remove(name)
+  printer.success("Removed %{name}")
+
+  // Also remove from current project's grain.yaml if present
+  let cwd = sys.cwd()
+  if (sys.exists(path.join(cwd, config.MANIFEST_NAME))) {
+    manifest.removeDep(cwd, name)
+    printer.info("Removed %{name} from grain.yaml dependencies")
+  }
+}
+
+func cmdList() {
+  let grains = registry.list()
+  let grainKeys = keys(grains)
+
+  if (len(grainKeys) == 0) {
+    printer.info("No grains installed")
+    return
+  }
+
+  printer.header("Installed grains:")
+  for (name in grainKeys) {
+    let info = grains[name]
+    let version = info.version
+    if (!version) { version = "latest" }
+    print("  %{name}@%{version} <- %{info.source}")
+  }
+  print("")
+  printer.info("%{len(grainKeys)} grain(s) installed")
+}
+
+func cmdInfo(args) {
+  ensure (len(args) > 0) else {
+    printer.error("Usage: sand info <name>")
+    sys.exit(1)
+  }
+
+  let name = args[0]
+  let info = registry.get(name)
+
+  if (!info) {
+    printer.error("Grain '%{name}' is not installed")
+    sys.exit(1)
+  }
+
+  printer.header(name)
+  print("  version:   %{info.version}")
+  print("  source:    %{info.source}")
+  print("  url:       %{info.url}")
+  if (info.installed) {
+    print("  installed: %{info.installed}")
+  }
+
+  let grainFile = path.join(config.grainsDir(), "%{name}.praia")
+  if (sys.exists(grainFile)) {
+    print("  file:      %{grainFile}")
+  }
+}
+
+// ── Dispatch ──
+
+func run(args) {
+  if (len(args) == 0) {
+    printUsage()
+    return
+  }
+
+  let cmd = args[0]
+
+  // Remaining args after the command
+  let rest = []
+  for (i in 1..len(args)) {
+    push(rest, args[i])
+  }
+
+  if (cmd == "init") { cmdInit(rest) }
+  elif (cmd == "install" || cmd == "i") { cmdInstall(rest) }
+  elif (cmd == "remove" || cmd == "rm") { cmdRemove(rest) }
+  elif (cmd == "list" || cmd == "ls") { cmdList() }
+  elif (cmd == "info") { cmdInfo(rest) }
+  elif (cmd == "--version" || cmd == "-v") { print("sand v%{config.SAND_VERSION}") }
+  elif (cmd == "help" || cmd == "--help" || cmd == "-h") { printUsage() }
+  else {
+    printer.error("Unknown command: %{cmd}")
+    print("")
+    printUsage()
+    sys.exit(1)
+  }
+}
+
+export { run }

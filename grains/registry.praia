@@ -1,0 +1,76 @@
+use "./config"
+
+func load() {
+  let filepath = config.lockFile()
+  if (!sys.exists(filepath)) {
+    return { grains: {} }
+  }
+  let content = sys.read(filepath)
+  if (len(content.strip()) == 0) {
+    return { grains: {} }
+  }
+  let data = yaml.parse(content)
+  if (!data) {
+    return { grains: {} }
+  }
+  if (!data.grains) {
+    data.grains = {}
+  }
+  return data
+}
+
+func save(lock) {
+  config.ensureGrainsDir()
+  let filepath = config.lockFile()
+  // Manual YAML serialization for the lock file
+  let lines = "grains:\n"
+  let grainKeys = keys(lock.grains)
+  for (name in grainKeys) {
+    let info = lock.grains[name]
+    lines = lines + "  %{name}:\n"
+    lines = lines + "    source: %{info.source}\n"
+    lines = lines + "    version: %{info.version}\n"
+    lines = lines + "    url: %{info.url}\n"
+    if (info.installed) {
+      lines = lines + "    installed: %{info.installed}\n"
+    }
+  }
+  sys.write(filepath, lines)
+}
+
+func add(name, info) {
+  let lock = load()
+  lock.grains[name] = info
+  save(lock)
+}
+
+func remove(name) {
+  let lock = load()
+  let newGrains = {}
+  let grainKeys = keys(lock.grains)
+  for (k in grainKeys) {
+    if (k != name) {
+      newGrains[k] = lock.grains[k]
+    }
+  }
+  lock.grains = newGrains
+  save(lock)
+}
+
+func get(name) {
+  let lock = load()
+  let grainKeys = keys(lock.grains)
+  for (k in grainKeys) {
+    if (k == name) {
+      return lock.grains[k]
+    }
+  }
+  return nil
+}
+
+func list() {
+  let lock = load()
+  return lock.grains
+}
+
+export { load, save, add, remove, get, list }

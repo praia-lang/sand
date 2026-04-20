@@ -1,0 +1,78 @@
+use "./config"
+
+func read(dir) {
+  let filepath = path.join(dir, config.MANIFEST_NAME)
+  ensure (sys.exists(filepath)) else {
+    throw "No grain.yaml found in %{dir}"
+  }
+  let content = sys.read(filepath)
+  return yaml.parse(content)
+}
+
+func write(dir, m) {
+  let filepath = path.join(dir, config.MANIFEST_NAME)
+  let lines = ""
+  lines = lines + "name: %{m.name}\n"
+  lines = lines + "version: %{m.version}\n"
+  if (m.description) {
+    lines = lines + "description: %{m.description}\n"
+  }
+  if (m.author) {
+    lines = lines + "author: %{m.author}\n"
+  }
+  if (m.license) {
+    lines = lines + "license: %{m.license}\n"
+  }
+  if (m.main) {
+    lines = lines + "main: %{m.main}\n"
+  }
+  lines = lines + "dependencies:\n"
+  if (m.dependencies) {
+    let depKeys = keys(m.dependencies)
+    if (len(depKeys) > 0) {
+      for (k in depKeys) {
+        lines = lines + "  %{k}: %{m.dependencies[k]}\n"
+      }
+    }
+  }
+  sys.write(filepath, lines)
+}
+
+func create(name) {
+  return {
+    name: name,
+    version: "0.1.0",
+    description: "",
+    author: "",
+    license: "MIT",
+    main: config.DEFAULT_MAIN,
+    dependencies: {}
+  }
+}
+
+func addDep(dir, name, source) {
+  let m = read(dir)
+  if (!m.dependencies) {
+    m.dependencies = {}
+  }
+  m.dependencies[name] = source
+  write(dir, m)
+}
+
+func removeDep(dir, name) {
+  let m = read(dir)
+  if (m.dependencies) {
+    // Rebuild without the removed key
+    let newDeps = {}
+    let depKeys = keys(m.dependencies)
+    for (k in depKeys) {
+      if (k != name) {
+        newDeps[k] = m.dependencies[k]
+      }
+    }
+    m.dependencies = newDeps
+    write(dir, m)
+  }
+}
+
+export { read, write, create, addDep, removeDep }

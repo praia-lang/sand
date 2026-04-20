@@ -1,0 +1,57 @@
+func parseSpec(spec) {
+  let version = nil
+  let urlPart = spec
+
+  // Split on @ for version, but skip the leading https:// or http://
+  let atIdx = urlPart.lastIndexOf("@")
+  if (atIdx > 0) {
+    // Make sure @ isn't part of the protocol
+    let beforeAt = urlPart.slice(0, atIdx)
+    if (!beforeAt.endsWith("/") && !beforeAt.endsWith(":")) {
+      version = urlPart.slice(atIdx + 1, len(urlPart))
+      urlPart = beforeAt
+    }
+  }
+
+  // Extract name from last path segment
+  let segments = urlPart.split("/")
+  let name = segments[len(segments) - 1]
+
+  // Remove .git suffix if present
+  if (name.endsWith(".git")) {
+    name = name.slice(0, len(name) - 4)
+  }
+
+  // Build full clone URL
+  let fullUrl = urlPart
+  if (!urlPart.startsWith("https://") && !urlPart.startsWith("http://") && !urlPart.startsWith("file://")) {
+    fullUrl = "https://%{urlPart}"
+  }
+  if (!fullUrl.endsWith(".git") && !fullUrl.startsWith("file://")) {
+    fullUrl = "%{fullUrl}.git"
+  }
+
+  return { url: fullUrl, version: version, name: name }
+}
+
+func clone(url, dest) {
+  let output = sys.exec("git clone --quiet %{url} %{dest} 2>&1; echo __EXIT:$?").strip()
+  if (!output.endsWith("__EXIT:0")) {
+    let msg = output.replace("__EXIT:0", "").replace("__EXIT:", "exit ").strip()
+    throw "git clone failed: %{msg}"
+  }
+}
+
+func checkout(dir, tag) {
+  // Try exact tag first, then v-prefixed, then as branch
+  let attempts = [tag, "v%{tag}"]
+  for (attempt in attempts) {
+    let out = sys.exec("git -C %{dir} checkout --quiet %{attempt} 2>&1; echo __EXIT:$?").strip()
+    if (out.endsWith("__EXIT:0")) {
+      return
+    }
+  }
+  throw "Version '%{tag}' not found (tried tag '%{tag}', 'v%{tag}')"
+}
+
+export { parseSpec, clone, checkout }
