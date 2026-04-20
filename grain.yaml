@@ -1,7 +1,7 @@
 name: sand
 version: 0.1.0
 description: Package manager for Praia
-author: viggolek
+author: Viggo Lekdorf
 license: MIT
 main: main.praia
 dependencies:
