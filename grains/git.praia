@@ -35,21 +35,19 @@ func parseSpec(spec) {
 }
 
 func clone(url, dest) {
-  let output = sys.exec("git clone --quiet %{url} %{dest} 2>&1; echo __EXIT:$?").strip()
-  if (!output.endsWith("__EXIT:0")) {
-    let msg = output.replace("__EXIT:0", "").replace("__EXIT:", "exit ").strip()
+  let r = sys.exec("git clone --quiet %{url} %{dest}")
+  if (r.exitCode != 0) {
+    let msg = r.stderr.strip()
+    if (len(msg) == 0) { msg = r.stdout.strip() }
     throw "git clone failed: %{msg}"
   }
 }
 
 func checkout(dir, tag) {
-  // Try exact tag first, then v-prefixed, then as branch
   let attempts = [tag, "v%{tag}"]
   for (attempt in attempts) {
-    let out = sys.exec("git -C %{dir} checkout --quiet %{attempt} 2>&1; echo __EXIT:$?").strip()
-    if (out.endsWith("__EXIT:0")) {
-      return
-    }
+    let r = sys.exec("git -C %{dir} checkout --quiet %{attempt}")
+    if (r.exitCode == 0) { return }
   }
   throw "Version '%{tag}' not found (tried tag '%{tag}', 'v%{tag}')"
 }

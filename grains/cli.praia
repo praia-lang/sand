@@ -93,7 +93,7 @@ func installGrain(spec, isGlobal) {
   printer.info("Installing %{name} from %{parsed.url}...")
 
   // Clone to temp dir
-  let tmpDir = sys.exec("mktemp -d").strip()
+  let tmpDir = sys.exec("mktemp -d").stdout.strip()
   let cloneDir = path.join(tmpDir, name)
 
   try {
@@ -139,7 +139,7 @@ func installGrain(spec, isGlobal) {
     // Register in lock file
     let version = parsed.version
     if (!version) { version = "latest" }
-    let today = sys.exec("date +%Y-%m-%d").strip()
+    let today = sys.exec("date +%Y-%m-%d").stdout.strip()
     registry.add(lockFile, name, {
       source: spec,
       version: version,
