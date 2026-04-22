@@ -3,6 +3,7 @@ use "./manifest"
 use "./git"
 use "./registry"
 use "./printer"
+use "progress"
 
 func printUsage() {
   printer.header("sand v%{config.SAND_VERSION} - package manager for Praia")
@@ -90,20 +91,24 @@ func installGrain(spec, isGlobal) {
     return
   }
 
-  printer.info("Installing %{name} from %{parsed.url}...")
+  let spin = progress.spinner({message: "Installing %{name} from %{parsed.url}..."})
+  spin.tick()
 
   // Clone to temp dir
   let tmpDir = sys.exec("mktemp -d").stdout.strip()
   let cloneDir = path.join(tmpDir, name)
 
   try {
+    spin.tick("Cloning %{parsed.url}...")
     git.clone(parsed.url, cloneDir)
 
     if (parsed.version) {
+      spin.tick("Checking out %{parsed.version}...")
       git.checkout(cloneDir, parsed.version)
     }
 
     // Determine main file from grain's manifest
+    spin.tick("Checking manifest...")
     let mainFile = config.DEFAULT_MAIN
     let grainManifestPath = path.join(cloneDir, config.MANIFEST_NAME)
     let grainManifest = nil
@@ -117,6 +122,7 @@ func installGrain(spec, isGlobal) {
     // Verify entry file exists
     let srcEntry = path.join(cloneDir, mainFile)
     ensure (sys.exists(srcEntry)) else {
+      spin.done()
       throw "Entry file '%{mainFile}' not found in grain repository"
     }
 
@@ -124,6 +130,7 @@ func installGrain(spec, isGlobal) {
     config.ensureDir(targetDir)
 
     // Copy the entire grain as a directory
+    spin.tick("Copying to %{targetDir}...")
     let destDir = path.join(targetDir, name)
     if (sys.exists(destDir)) {
       sys.remove(destDir)
@@ -137,6 +144,7 @@ func installGrain(spec, isGlobal) {
     }
 
     // Register in lock file
+    spin.tick("Updating lock file...")
     let version = parsed.version
     if (!version) { version = "latest" }
     let today = sys.exec("date +%Y-%m-%d").stdout.strip()
@@ -149,6 +157,7 @@ func installGrain(spec, isGlobal) {
 
     let location = "ext_grains/"
     if (isGlobal) { location = "~/.praia/grains/" }
+    spin.done()
     printer.success("Installed %{name}@%{version} -> %{location}%{name}/")
 
     // Install transitive dependencies
@@ -165,6 +174,7 @@ func installGrain(spec, isGlobal) {
       }
     } catch (e) {}
   } catch (err) {
+    spin.done()
     printer.error("Failed to install %{name}: %{err}")
     sys.exit(1)
   }

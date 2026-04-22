@@ -1,14 +1,9 @@
-let RESET  = "\x1b[0m"
-let GREEN  = "\x1b[32m"
-let RED    = "\x1b[31m"
-let YELLOW = "\x1b[33m"
-let CYAN   = "\x1b[36m"
-let BOLD   = "\x1b[1m"
+use "colors"
 
-func success(msg) { print("%{GREEN}ok%{RESET} %{msg}") }
-func error(msg)   { print("%{RED}error%{RESET} %{msg}") }
-func warn(msg)    { print("%{YELLOW}warn%{RESET} %{msg}") }
-func info(msg)    { print("%{CYAN}info%{RESET} %{msg}") }
-func header(msg)  { print("%{BOLD}%{msg}%{RESET}") }
+func success(msg) { print(colors.green("ok") + " " + msg) }
+func error(msg)   { print(colors.red("error") + " " + msg) }
+func warn(msg)    { print(colors.yellow("warn") + " " + msg) }
+func info(msg)    { print(colors.cyan("info") + " " + msg) }
+func header(msg)  { print(colors.bold(msg)) }
 
 export { success, error, warn, info, header }

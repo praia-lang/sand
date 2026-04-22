@@ -1,5 +1,12 @@
 use "./grains/cli"
 
+ensure (!sys.isRoot()) else {
+  print("\x1b[31merror\x1b[0m sand should not be run as root (sudo)")
+  print("      Install locally with 'sand install <url>'")
+  print("      Install globally with 'sand install --global <url>'")
+  sys.exit(1)
+}
+
 try {
   cli.run(sys.args)
 } catch (err) {
