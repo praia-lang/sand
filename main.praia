@@ -1,10 +1,9 @@
 use "./grains/cli"
 
-ensure (!sys.isRoot()) else {
-  print("\x1b[31merror\x1b[0m sand should not be run as root (sudo)")
-  print("      Install locally with 'sand install <url>'")
-  print("      Install globally with 'sand install --global <url>'")
-  sys.exit(1)
+if (sys.isRoot()) {
+  print("\x1b[33mwarn\x1b[0m Running sand as root is not recommended.")
+  print("     Local installs go to ext_grains/. Use --global for system-wide installs.")
+  print("")
 }
 
 try {

@@ -8,8 +8,26 @@ func home() {
   return sys.env("HOME")
 }
 
+// User-global: ~/.praia/ext_grains/ (no root needed)
+func userGlobalDir() {
+  return path.join(home(), ".praia", "ext_grains")
+}
+
+// System-global: <libdir>/ext_grains/ (requires root)
+// Uses sys.libdir (baked into praia at install time),
+// otherwise falls back to /usr/local/lib/praia
+func systemGlobalDir() {
+  let libdir = sys.libdir
+  if (!libdir) { libdir = "/usr/local/lib/praia" }
+  return path.join(libdir, "ext_grains")
+}
+
+// Choose global dir based on whether we're running as root
 func globalGrainsDir() {
-  return path.join(home(), ".praia", "grains")
+  if (sys.isRoot()) {
+    return systemGlobalDir()
+  }
+  return userGlobalDir()
 }
 
 func globalLockFile() {

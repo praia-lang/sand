@@ -23,7 +23,7 @@ func printUsage() {
   print("  URL format: github.com/user/repo or github.com/user/repo@0.2.0")
   print("")
   print("  Grains are installed to ext_grains/ by default.")
-  print("  Use --global to install to ~/.praia/grains/ instead.")
+  print("  Use --global to install to ~/.praia/ext_grains/ (or system-wide with sudo).")
 }
 
 // Parse --global flag from args, returns {global: bool, rest: []}
@@ -156,7 +156,7 @@ func installGrain(spec, isGlobal) {
     })
 
     let location = "ext_grains/"
-    if (isGlobal) { location = "~/.praia/grains/" }
+    if (isGlobal) { location = config.globalGrainsDir() + "/" }
     spin.done()
     printer.success("Installed %{name}@%{version} -> %{location}%{name}/")
 
