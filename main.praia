@@ -1,7 +1,8 @@
+use "colors"
 use "./grains/cli"
 
 if (sys.isRoot()) {
-  print("\x1b[33mwarn\x1b[0m Running sand as root is not recommended.")
+  print(colors.yellow("warn") + " Running sand as root is not recommended.")
   print("     Local installs go to ext_grains/. Use --global for system-wide installs.")
   print("")
 }
@@ -9,6 +10,6 @@ if (sys.isRoot()) {
 try {
   cli.run(sys.args)
 } catch (err) {
-  print("\x1b[31merror\x1b[0m %{err}")
+  print(colors.red("error") + " " + err)
   sys.exit(1)
 }
