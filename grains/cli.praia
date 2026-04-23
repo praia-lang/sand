@@ -207,41 +207,47 @@ func installGrain(spec, isGlobal) {
   }
 }
 
-func installFromManifest(isGlobal) {
-  let cwd = sys.cwd()
-  let m = manifest.read(cwd)
-
-  if (!m.dependencies) {
-    printer.info("No dependencies to install")
-    return
-  }
-
-  let depKeys = keys(m.dependencies)
-  if (len(depKeys) == 0) {
-    printer.info("No dependencies to install")
-    return
-  }
-
+func installFromLockFile(isGlobal) {
   let lockFile = getLockFile(isGlobal)
-  printer.header("Installing dependencies for %{m.name}...")
+  let lock = registry.load(lockFile)
+  let grainKeys = keys(lock.grains)
 
-  for (depName in depKeys) {
-    let source = m.dependencies[depName]
-    if (registry.get(lockFile, depName)) {
-      printer.info("  %{depName} already installed, skipping")
+  if (len(grainKeys) == 0) {
+    printer.info("No grains in lock file")
+    return
+  }
+
+  let targetDir = getTargetDir(isGlobal)
+  printer.header("Installing grains from %{config.LOCK_NAME}...")
+
+  let installed = 0
+  for (name in grainKeys) {
+    let grainDir = path.join(targetDir, name)
+    if (sys.exists(grainDir)) {
+      printer.info("  %{name} already installed, skipping")
     } else {
-      installGrain(str(source), isGlobal)
+      let info = lock.grains[name]
+      let spec = str(info.source)
+      if (info.version && info.version != "latest") {
+        spec = spec + "@" + info.version
+      }
+      installGrain(spec, isGlobal)
+      installed = installed + 1
     }
   }
 
-  printer.success("All dependencies installed")
+  if (installed == 0) {
+    printer.success("All grains already installed")
+  } else {
+    printer.success("Installed %{installed} grain(s)")
+  }
 }
 
 func cmdInstall(args) {
   let flags = parseFlags(args)
 
   if (len(flags.rest) == 0) {
-    installFromManifest(flags.global)
+    installFromLockFile(flags.global)
   } else {
     for (spec in flags.rest) {
       installGrain(spec, flags.global)
