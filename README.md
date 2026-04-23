@@ -1,34 +1,18 @@
 # sand
 
-Package manager for [Praia](https://github.com/praia-lang/praia). Written in Praia.
+Package manager for [Praia](https://github.com/praia-lang/praia). Written in Praia, bundled with the Praia installation.
 
-Grains (Praia modules) are installed from Git repositories into your project's `ext_grains/` directory by default.
-
-## Install
-
-```bash
-git clone https://github.com/praia-lang/sand.git ~/.praia/sand
-```
-
-Then add it to your shell:
-
-```bash
-# symlink
-ln -s ~/.praia/sand/sand.sh /usr/local/bin/sand
-
-# or alias in ~/.bashrc / ~/.zshrc
-alias sand='~/.praia/sand/sand.sh'
-```
-
-Requires `praia` and `git` on your PATH.
+Grains (Praia modules) are installed from Git repositories into your project's `ext_grains/` directory.
 
 ## Usage
 
+sand is installed automatically with Praia (`make install`). Requires `git` on your PATH.
+
 ```
 sand init                      Create a grain.yaml in the current directory
-sand install                   Install all dependencies from grain.yaml
+sand install                   Install grains from sand-lock.yaml
 sand install <url>             Install a grain locally (into ext_grains/)
-sand install --global <url>    Install a grain globally (into ~/.praia/grains/)
+sand install --global <url>    Install a grain globally (into ~/.praia/ext_grains/)
 sand remove <name>             Remove a locally installed grain
 sand remove --global <name>    Remove a globally installed grain
 sand list                      List locally installed grains
@@ -57,30 +41,35 @@ sand install --global github.com/user/mygrain
 Then use it in your Praia code:
 
 ```
-use 'mygrain'
+use "mygrain"
 
 mygrain.doSomething()
 ```
 
-Grain names with hyphens need an alias:
+## Installing from lock file
 
-```
-use 'my-grain' as myGrain
+Running `sand install` with no arguments reads `sand-lock.yaml` and installs any missing grains. Grains pinned to `latest` are re-fetched to pull updates.
 
-myGrain.doSomething()
+This is useful for cloning a project and restoring its dependencies:
+
+```bash
+git clone https://github.com/user/myproject.git
+cd myproject
+sand install
 ```
 
 ## Local vs global
 
-By default, grains are installed **locally** into `ext_grains/` in your project root, with a `sand-lock.yaml` lock file alongside your `grain.yaml`. This means each project has its own isolated dependencies.
+By default, grains are installed **locally** into `ext_grains/` in your project root, tracked in `sand-lock.yaml`. Each project has its own isolated dependencies.
 
-Use `--global` (or `-g`) to install into `~/.praia/grains/` instead, making the grain available to all projects.
+Use `--global` (or `-g`) to install into `~/.praia/ext_grains/` instead, making the grain available to all projects.
 
 Praia resolves grains in this order:
 
-1. `ext_grains/` (local, from your project)
+1. `ext_grains/` (local project dependencies)
 2. `grains/` (bundled with your project)
-3. `~/.praia/grains/` (global)
+3. `~/.praia/ext_grains/` (user global)
+4. `<libdir>/grains/` (system, installed with Praia)
 
 ## Project manifest
 
@@ -94,35 +83,29 @@ author: username
 license: MIT
 main: main.praia
 dependencies:
-  router: github.com/user/router@0.1.0
-  utils: github.com/user/utils
+  db: github.com/user/praia-db
+  dotenv: github.com/user/praia-dotenv
 ```
 
-When you `sand install <url>` inside a project with a `grain.yaml`, the dependency is automatically added. Running `sand install` with no arguments installs everything listed in `dependencies`.
+When you `sand install <url>`, the dependency is automatically added to `grain.yaml` if one exists. Transitive dependencies listed in a grain's own `grain.yaml` are installed automatically.
 
 ## Publishing a grain
 
-A grain is a Git repository with a `grain.yaml` and Praia source files.
-
-Single-file grain:
+A grain is a Git repository with a `grain.yaml` and Praia source files. The `name` field in `grain.yaml` determines the import name (not the repo name).
 
 ```
-mygrain/
-  grain.yaml
-  main.praia
+my-grain-repo/
+  grain.yaml       # name: mygrain
+  main.praia       # entry point
+  helpers.praia    # internal module (use "./helpers")
 ```
 
-Multi-file grain:
-
+```yaml
+name: mygrain
+version: 0.1.0
+main: main.praia
+dependencies:
 ```
-mygrain/
-  grain.yaml
-  main.praia       <- entry point
-  helpers.praia
-  utils.praia
-```
-
-The `main` field in `grain.yaml` specifies the entry file (defaults to `main.praia`). The entire directory is copied on install, so relative imports between files work.
 
 Tag releases with git tags for versioned installs:
 
@@ -133,8 +116,7 @@ git push origin 0.1.0
 
 ## How it works
 
-- `sand install` clones the repo to a temp directory and copies the entire grain directory into `ext_grains/<name>/` (or `~/.praia/grains/<name>/` with `--global`)
-- Installed grains are tracked in `sand-lock.yaml` (local) or `~/.praia/grains/.sand-lock.yaml` (global)
-- Praia resolves `use 'name'` by looking for `ext_grains/<name>/` and reading its `grain.yaml` to find the entry point
+- `sand install <url>` clones the repo, reads the grain's `grain.yaml` for its name, and copies it into `ext_grains/<name>/`
+- Installed grains are tracked in `sand-lock.yaml` (local) or `~/.praia/ext_grains/.sand-lock.yaml` (global)
+- `sand install` with no arguments restores from `sand-lock.yaml`, installing missing grains and updating those pinned to `latest`
 - Multi-file grains work because relative imports (`use "./helpers"`) resolve from the grain's own directory
-- Transitive dependencies listed in a grain's `grain.yaml` are installed automatically
