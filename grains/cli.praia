@@ -23,7 +23,7 @@ func printUsage() {
   print("  URL format: github.com/user/repo or github.com/user/repo@0.2.0")
   print("")
   print("  Grains are installed to ext_grains/ by default.")
-  print("  Use --global to install to ~/.praia/ext_grains/ (or system-wide with sudo).")
+  print("  Use --global to install to ~/.praia/grains/ instead.")
 }
 
 // Parse --global flag from args, returns {global: bool, rest: []}
@@ -107,7 +107,7 @@ func installGrain(spec, isGlobal) {
       git.checkout(cloneDir, parsed.version)
     }
 
-    // Determine main file from grain's manifest
+    // Determine main file and grain name from manifest
     spin.tick("Checking manifest...")
     let mainFile = config.DEFAULT_MAIN
     let grainManifestPath = path.join(cloneDir, config.MANIFEST_NAME)
@@ -116,6 +116,19 @@ func installGrain(spec, isGlobal) {
       grainManifest = manifest.read(cloneDir)
       if (grainManifest.main) {
         mainFile = grainManifest.main
+      }
+      // Use the grain's declared name for the install directory
+      if (grainManifest.name && grainManifest.name != name) {
+        name = grainManifest.name
+        // Re-check if already installed under the grain name
+        let existingByName = registry.get(lockFile, name)
+        if (existingByName) {
+          spin.done()
+          printer.warn("'%{name}' is already installed (source: %{existingByName.source})")
+          printer.info("Use 'sand remove %{name}' first to reinstall")
+          try { sys.remove(tmpDir) } catch (e) {}
+          return
+        }
       }
     }
 
@@ -156,7 +169,7 @@ func installGrain(spec, isGlobal) {
     })
 
     let location = "ext_grains/"
-    if (isGlobal) { location = config.globalGrainsDir() + "/" }
+    if (isGlobal) { location = "~/.praia/grains/" }
     spin.done()
     printer.success("Installed %{name}@%{version} -> %{location}%{name}/")
 
