@@ -221,12 +221,21 @@ func installFromLockFile(isGlobal) {
   printer.header("Installing grains from %{config.LOCK_NAME}...")
 
   let installed = 0
+  let updated = 0
   for (name in grainKeys) {
+    let info = lock.grains[name]
     let grainDir = path.join(targetDir, name)
-    if (sys.exists(grainDir)) {
-      printer.info("  %{name} already installed, skipping")
+
+    if (sys.exists(grainDir) && info.version == "latest") {
+      // Update: remove old version and reinstall from latest
+      printer.info("  %{name} is pinned to latest, updating...")
+      sys.remove(grainDir)
+      registry.remove(lockFile, name)
+      installGrain(str(info.source), isGlobal)
+      updated = updated + 1
+    } elif (sys.exists(grainDir)) {
+      printer.info("  %{name}@%{info.version} already installed, skipping")
     } else {
-      let info = lock.grains[name]
       let spec = str(info.source)
       if (info.version && info.version != "latest") {
         spec = spec + "@" + info.version
@@ -236,10 +245,11 @@ func installFromLockFile(isGlobal) {
     }
   }
 
-  if (installed == 0) {
-    printer.success("All grains already installed")
+  if (installed == 0 && updated == 0) {
+    printer.success("All grains already up to date")
   } else {
-    printer.success("Installed %{installed} grain(s)")
+    if (installed > 0) { printer.success("Installed %{installed} grain(s)") }
+    if (updated > 0) { printer.success("Updated %{updated} grain(s)") }
   }
 }
 
