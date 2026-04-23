@@ -236,6 +236,8 @@ func installFromLockFile(isGlobal) {
     } elif (sys.exists(grainDir)) {
       printer.info("  %{name}@%{info.version} already installed, skipping")
     } else {
+      // Directory missing — remove stale lock entry so installGrain doesn't skip it
+      registry.remove(lockFile, name)
       let spec = str(info.source)
       if (info.version && info.version != "latest") {
         spec = spec + "@" + info.version
