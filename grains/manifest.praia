@@ -50,7 +50,7 @@ func create(name) {
   return {
     name: name,
     version: "0.1.0",
-    description: "",
+    description: "A tiny sand grain on a large beach",
     author: "",
     license: "MIT",
     main: config.DEFAULT_MAIN,
