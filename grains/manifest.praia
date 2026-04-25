@@ -22,10 +22,10 @@ func write(dir, m) {
   let lines = ""
   lines = lines + "name: %{m.name}\n"
   lines = lines + "version: %{m.version}\n"
-  if (has(m, "description") && m.description) {
+  if (has(m, "description")) {
     lines = lines + "description: %{m.description}\n"
   }
-  if (has(m, "author") && m.author) {
+  if (has(m, "author")) {
     lines = lines + "author: %{m.author}\n"
   }
   if (has(m, "license") && m.license) {
