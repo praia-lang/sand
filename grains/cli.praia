@@ -9,6 +9,7 @@ func printUsage() {
   printer.header("sand v%{config.SAND_VERSION} - package manager for Praia")
   print("")
   print("  sand init                  Create a grain.yaml in the current directory")
+  print("  sand init --plugin         Create a grain with a native C++ plugin")
   print("  sand install               Install all dependencies from grain.yaml")
   print("  sand install <url>         Install a grain from a Git URL")
   print("  sand install --global <url>  Install a grain globally")
@@ -57,6 +58,17 @@ func getLockFile(isGlobal) {
 // ── Commands ──
 
 func cmdInit(args) {
+  let flags = parseFlags(args)
+  let isPlugin = false
+  let rest = []
+  for (arg in flags.rest) {
+    if (arg == "--plugin" || arg == "-p") {
+      isPlugin = true
+    } else {
+      push(rest, arg)
+    }
+  }
+
   let dir = sys.cwd()
   let manifestPath = path.join(dir, config.MANIFEST_NAME)
 
@@ -71,10 +83,41 @@ func cmdInit(args) {
 
   let mainPath = path.join(dir, config.DEFAULT_MAIN)
   if (!sys.exists(mainPath)) {
-    sys.write(mainPath, "print('Hello from %{name}!')\n")
+    if (isPlugin) {
+      sys.write(mainPath, "let ext = \".dylib\"\nif (sys.platform != \"darwin\") { ext = \".so\" }\n\nlet _native = loadNative(path.dirname(sys.currentFile()) + \"/plugins/%{name}\" + ext)\n\n// Export your plugin functions here\n// let myFunc = _native.myFunc\n// export { myFunc }\n")
+    } else {
+      sys.write(mainPath, "print('Hello from %{name}!')\n")
+    }
   }
 
-  printer.success("Created grain.yaml and %{config.DEFAULT_MAIN} for '%{name}'")
+  if (isPlugin) {
+    // Create plugins/ directory with C++ template
+    let pluginsDir = path.join(dir, "plugins")
+    if (!sys.exists(pluginsDir)) {
+      sys.mkdir(pluginsDir)
+    }
+
+    let cppPath = path.join(pluginsDir, name + ".cpp")
+    if (!sys.exists(cppPath)) {
+      sys.write(cppPath, "#include \"praia_plugin.h\"\n\nextern \"C\" void praia_register(PraiaMap* module) {\n    module->entries[\"hello\"] = Value(makeNative(\"%{name}.hello\", 0,\n        [](const std::vector<Value>& args) -> Value {\n            return Value(std::string(\"Hello from %{name}!\"));\n        }));\n}\n")
+    }
+
+    // Create Makefile
+    let makefilePath = path.join(dir, "Makefile")
+    if (!sys.exists(makefilePath)) {
+      sys.write(makefilePath, "PRAIA_INCLUDE := $(shell praia --include-path)\nUNAME_S := $(shell uname -s)\n\nifeq ($(UNAME_S),Darwin)\n  EXT = .dylib\n  LDFLAGS = -undefined dynamic_lookup\nelse\n  EXT = .so\n  LDFLAGS =\nendif\n\nall:\n\tg++ -std=c++17 -shared -fPIC -I$(PRAIA_INCLUDE) $(LDFLAGS) -o plugins/%{name}$(EXT) plugins/%{name}.cpp\n\nclean:\n\trm -f plugins/%{name}.dylib plugins/%{name}.so\n\n.PHONY: all clean\n")
+    }
+
+    printer.success("Created plugin grain '%{name}' with:")
+    printer.info("  grain.yaml")
+    printer.info("  main.praia")
+    printer.info("  plugins/%{name}.cpp")
+    printer.info("  Makefile")
+    printer.info("")
+    printer.info("Build with: make")
+  } else {
+    printer.success("Created grain.yaml and %{config.DEFAULT_MAIN} for '%{name}'")
+  }
 }
 
 func installGrain(spec, isGlobal) {
