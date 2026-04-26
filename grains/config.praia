@@ -1,5 +1,9 @@
-let SAND_VERSION = "0.1.0"
 let MANIFEST_NAME = "grain.yaml"
+
+// Read version from grain.yaml so it's defined in one place
+let _sandDir = path.dirname(path.dirname(sys.currentFile()))
+let _manifest = yaml.parse(sys.read(path.join(_sandDir, MANIFEST_NAME)))
+let SAND_VERSION = _manifest.version
 let LOCK_NAME = "sand-lock.yaml"
 let DEFAULT_MAIN = "main.praia"
 let EXT_GRAINS_DIR = "ext_grains"

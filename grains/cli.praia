@@ -24,7 +24,7 @@ func printUsage() {
   print("  URL format: github.com/user/repo or github.com/user/repo@0.2.0")
   print("")
   print("  Grains are installed to ext_grains/ by default.")
-  print("  Use --global to install to ~/.praia/grains/ instead.")
+  print("  Use --global to install to ~/.praia/ext_grains/ instead.")
 }
 
 // Parse --global flag from args, returns {global: bool, rest: []}
@@ -212,7 +212,7 @@ func installGrain(spec, isGlobal) {
     })
 
     let location = "ext_grains/"
-    if (isGlobal) { location = "~/.praia/grains/" }
+    if (isGlobal) { location = "~/.praia/ext_grains/" }
     spin.done()
     printer.success("Installed %{name}@%{version} -> %{location}%{name}/")
 
@@ -228,7 +228,9 @@ func installGrain(spec, isGlobal) {
           }
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      printer.warn("Failed to install transitive dependencies: " + str(e))
+    }
   } catch (err) {
     spin.done()
     printer.error("Failed to install %{name}: %{err}")
@@ -245,7 +247,9 @@ func installGrain(spec, isGlobal) {
       try {
         manifest.addDep(cwd, name, spec)
         printer.info("Added %{name} to grain.yaml dependencies")
-      } catch (e) {}
+      } catch (e) {
+        printer.warn("Could not update grain.yaml: " + str(e))
+      }
     }
   }
 }

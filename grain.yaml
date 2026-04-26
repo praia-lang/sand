@@ -1,6 +1,6 @@
 name: sand
-version: 0.1.4
-description: Package manager for Praia
+version: 0.2.0
+description: The package manager for Praia
 author: Viggo Lekdorf
 license: MIT
 main: main.praia
