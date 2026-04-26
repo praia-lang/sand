@@ -25,20 +25,24 @@ func printUsage() {
   print("")
   print("  Grains are installed to ext_grains/ by default.")
   print("  Use --global to install to ~/.praia/ext_grains/ instead.")
+  print("  Use --verbose for detailed output (shows git commands, etc.)")
 }
 
-// Parse --global flag from args, returns {global: bool, rest: []}
+// Parse flags from args, returns {global: bool, verbose: bool, rest: []}
 func parseFlags(args) {
   let isGlobal = false
+  let isVerbose = false
   let rest = []
   for (arg in args) {
     if (arg == "--global" || arg == "-g") {
       isGlobal = true
+    } elif (arg == "--verbose") {
+      isVerbose = true
     } else {
       push(rest, arg)
     }
   }
-  return { global: isGlobal, rest: rest }
+  return { global: isGlobal, verbose: isVerbose, rest: rest }
 }
 
 func getTargetDir(isGlobal) {
@@ -120,7 +124,7 @@ func cmdInit(args) {
   }
 }
 
-func installGrain(spec, isGlobal) {
+func installGrain(spec, isGlobal, verbose = false) {
   let parsed = git.parseSpec(spec)
   let name = parsed.name
   let targetDir = getTargetDir(isGlobal)
@@ -135,23 +139,25 @@ func installGrain(spec, isGlobal) {
   }
 
   let spin = progress.spinner({message: "Installing %{name} from %{parsed.url}..."})
-  spin.tick()
+  if (!verbose) { spin.tick() }
 
   // Clone to temp dir
   let tmpDir = sys.exec("mktemp -d").stdout.strip()
   let cloneDir = path.join(tmpDir, name)
 
   try {
-    spin.tick("Cloning %{parsed.url}...")
-    git.clone(parsed.url, cloneDir)
+    if (verbose) { printer.info("Cloning %{parsed.url} -> %{cloneDir}") }
+    else { spin.tick("Cloning %{parsed.url}...") }
+    git.clone(parsed.url, cloneDir, verbose)
 
     if (parsed.version) {
-      spin.tick("Checking out %{parsed.version}...")
-      git.checkout(cloneDir, parsed.version)
+      if (verbose) { printer.info("Checking out %{parsed.version}...") }
+      else { spin.tick("Checking out %{parsed.version}...") }
+      git.checkout(cloneDir, parsed.version, verbose)
     }
 
     // Determine main file and grain name from manifest
-    spin.tick("Checking manifest...")
+    if (!verbose) { spin.tick("Checking manifest...") }
     let mainFile = config.DEFAULT_MAIN
     let grainManifestPath = path.join(cloneDir, config.MANIFEST_NAME)
     let grainManifest = nil
@@ -186,7 +192,8 @@ func installGrain(spec, isGlobal) {
     config.ensureDir(targetDir)
 
     // Copy the entire grain as a directory
-    spin.tick("Copying to %{targetDir}...")
+    if (verbose) { printer.info("Copying to %{targetDir}/%{name}/") }
+    else { spin.tick("Copying to %{targetDir}...") }
     let destDir = path.join(targetDir, name)
     if (sys.exists(destDir)) {
       sys.remove(destDir)
@@ -200,10 +207,10 @@ func installGrain(spec, isGlobal) {
     }
 
     // Register in lock file
-    spin.tick("Updating lock file...")
+    if (!verbose) { spin.tick("Updating lock file...") }
     let version = parsed.version
     if (!version) { version = "latest" }
-    let today = sys.exec("date +%Y-%m-%d").stdout.strip()
+    let today = sys.exec(["date", "+%Y-%m-%d"]).stdout.strip()
     registry.add(lockFile, name, {
       source: spec,
       version: version,
@@ -213,7 +220,7 @@ func installGrain(spec, isGlobal) {
 
     let location = "ext_grains/"
     if (isGlobal) { location = "~/.praia/ext_grains/" }
-    spin.done()
+    if (!verbose) { spin.done() }
     printer.success("Installed %{name}@%{version} -> %{location}%{name}/")
 
     // Install transitive dependencies
@@ -224,7 +231,7 @@ func installGrain(spec, isGlobal) {
           let depSource = grainManifest.dependencies[depName]
           if (!registry.get(lockFile, depName)) {
             printer.info("  Installing dependency: %{depName}")
-            installGrain(str(depSource), isGlobal)
+            installGrain(str(depSource), isGlobal, verbose)
           }
         }
       }
@@ -232,7 +239,7 @@ func installGrain(spec, isGlobal) {
       printer.warn("Failed to install transitive dependencies: " + str(e))
     }
   } catch (err) {
-    spin.done()
+    if (!verbose) { spin.done() }
     printer.error("Failed to install %{name}: %{err}")
     sys.exit(1)
   }
@@ -254,7 +261,7 @@ func installGrain(spec, isGlobal) {
   }
 }
 
-func installFromLockFile(isGlobal) {
+func installFromLockFile(isGlobal, verbose = false) {
   let lockFile = getLockFile(isGlobal)
   let lock = registry.load(lockFile)
   let grainKeys = keys(lock.grains)
@@ -278,7 +285,7 @@ func installFromLockFile(isGlobal) {
       printer.info("  %{name} is pinned to latest, updating...")
       sys.remove(grainDir)
       registry.remove(lockFile, name)
-      installGrain(str(info.source), isGlobal)
+      installGrain(str(info.source), isGlobal, verbose)
       updated = updated + 1
     } elif (sys.exists(grainDir)) {
       printer.info("  %{name}@%{info.version} already installed, skipping")
@@ -289,7 +296,7 @@ func installFromLockFile(isGlobal) {
       if (info.version && info.version != "latest") {
         spec = spec + "@" + info.version
       }
-      installGrain(spec, isGlobal)
+      installGrain(spec, isGlobal, verbose)
       installed = installed + 1
     }
   }
@@ -306,10 +313,10 @@ func cmdInstall(args) {
   let flags = parseFlags(args)
 
   if (len(flags.rest) == 0) {
-    installFromLockFile(flags.global)
+    installFromLockFile(flags.global, flags.verbose)
   } else {
     for (spec in flags.rest) {
-      installGrain(spec, flags.global)
+      installGrain(spec, flags.global, flags.verbose)
     }
   }
 }

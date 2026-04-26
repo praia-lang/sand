@@ -34,8 +34,13 @@ func parseSpec(spec) {
   return { url: fullUrl, version: version, name: name }
 }
 
-func clone(url, dest) {
-  let r = sys.exec("git clone --quiet %{url} %{dest}")
+func clone(url, dest, verbose = false) {
+  let cmd = ["git", "clone"]
+  if (!verbose) { push(cmd, "--quiet") }
+  push(cmd, url)
+  push(cmd, dest)
+  let r = sys.exec(cmd)
+  if (verbose && len(r.stderr.strip()) > 0) { print(r.stderr.strip()) }
   if (r.exitCode != 0) {
     let msg = r.stderr.strip()
     if (len(msg) == 0) { msg = r.stdout.strip() }
@@ -43,10 +48,14 @@ func clone(url, dest) {
   }
 }
 
-func checkout(dir, tag) {
+func checkout(dir, tag, verbose = false) {
   let attempts = [tag, "v%{tag}"]
   for (attempt in attempts) {
-    let r = sys.exec("git -C %{dir} checkout --quiet %{attempt}")
+    let cmd = ["git", "-C", dir, "checkout"]
+    if (!verbose) { push(cmd, "--quiet") }
+    push(cmd, attempt)
+    let r = sys.exec(cmd)
+    if (verbose && len(r.stderr.strip()) > 0) { print(r.stderr.strip()) }
     if (r.exitCode == 0) { return }
   }
   throw "Version '%{tag}' not found (tried tag '%{tag}', 'v%{tag}')"
