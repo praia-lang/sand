@@ -10,7 +10,7 @@ func printUsage() {
   print("")
   print("  sand init                  Create a grain.yaml in the current directory")
   print("  sand init --plugin         Create a grain with a native C++ plugin")
-  print("  sand install               Install or update all dependencies from grain.yaml")
+  print("  sand install               Install or update all dependencies from grain.yaml or sand-lock.yaml")
   print("  sand install <url>         Install a grain from a Git URL")
   print("  sand install --global <url>  Install a grain globally")
   print("  sand remove <name>         Remove a locally installed grain")
