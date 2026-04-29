@@ -124,7 +124,7 @@ func cmdInit(args) {
   }
 }
 
-func installGrain(spec, isGlobal, verbose = false) {
+func installGrain(spec, isGlobal, verbose = false, addToDeps = true) {
   let parsed = git.parseSpec(spec)
   let name = parsed.name
   let targetDir = getTargetDir(isGlobal)
@@ -231,7 +231,7 @@ func installGrain(spec, isGlobal, verbose = false) {
           let depSource = grainManifest.dependencies[depName]
           if (!registry.get(lockFile, depName)) {
             printer.info("  Installing dependency: %{depName}")
-            installGrain(str(depSource), isGlobal, verbose)
+            installGrain(str(depSource), isGlobal, verbose, false)
           }
         }
       }
@@ -247,8 +247,8 @@ func installGrain(spec, isGlobal, verbose = false) {
   // Cleanup temp dir
   try { sys.remove(tmpDir) } catch (e) {}
 
-  // Add to current project's grain.yaml if it exists and not global
-  if (!isGlobal) {
+  // Add to current project's grain.yaml if installing a new grain (not from lockfile)
+  if (addToDeps && !isGlobal) {
     let cwd = sys.cwd()
     if (sys.exists(path.join(cwd, config.MANIFEST_NAME))) {
       try {
@@ -285,7 +285,7 @@ func installFromLockFile(isGlobal, verbose = false) {
       printer.info("  %{name} is pinned to latest, updating...")
       sys.remove(grainDir)
       registry.remove(lockFile, name)
-      installGrain(str(info.source), isGlobal, verbose)
+      installGrain(str(info.source), isGlobal, verbose, false)
       updated = updated + 1
     } elif (sys.exists(grainDir)) {
       printer.info("  %{name}@%{info.version} already installed, skipping")
@@ -296,7 +296,7 @@ func installFromLockFile(isGlobal, verbose = false) {
       if (info.version && info.version != "latest") {
         spec = spec + "@" + info.version
       }
-      installGrain(spec, isGlobal, verbose)
+      installGrain(spec, isGlobal, verbose, false)
       installed = installed + 1
     }
   }
