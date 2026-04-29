@@ -10,7 +10,8 @@ sand is installed automatically with Praia (`make install`). Requires `git` on y
 
 ```
 sand init                      Create a grain.yaml in the current directory
-sand install                   Install grains from sand-lock.yaml
+sand init --plugin             Create a grain with a native C++ plugin
+sand install                   Install or update grains from sand-lock.yaml
 sand install <url>             Install a grain locally (into ext_grains/)
 sand install --global <url>    Install a grain globally (into ~/.praia/ext_grains/)
 sand remove <name>             Remove a locally installed grain
