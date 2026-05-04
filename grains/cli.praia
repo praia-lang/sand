@@ -127,7 +127,11 @@ func cmdInit(args) {
 // `visited` is a map of grain names → true, used to detect cycles in
 // transitive dependency installs (e.g. A → B → A). Top-level callers omit it
 // so each fresh install starts with an empty set.
-func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {}) {
+//
+// `preserveInstalledDate` (string or nil): when restoring from sand-lock.yaml,
+// pass the original date so the lockfile isn't marked as modified by a fresh
+// install. Nil means "use today's date" (the normal install path).
+func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {}, preserveInstalledDate = nil) {
   let parsed = git.parseSpec(spec)
   let name = parsed.name
   ensure (manifest.isValidName(name)) else {
@@ -231,12 +235,15 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
     if (!verbose) { spin.tick("Updating lock file...") }
     let version = parsed.version
     if (!version) { version = "latest" }
-    let today = sys.exec(["date", "+%Y-%m-%d"]).stdout.strip()
+    let installedDate = preserveInstalledDate
+    if (!installedDate) {
+      installedDate = sys.exec(["date", "+%Y-%m-%d"]).stdout.strip()
+    }
     registry.add(lockFile, name, {
       source: spec,
       version: version,
       url: parsed.url,
-      installed: today
+      installed: installedDate
     })
 
     let location = "ext_grains/"
@@ -308,12 +315,16 @@ func installFromLockFile(isGlobal, verbose = false) {
     let info = lock.grains[name]
     let grainDir = path.join(targetDir, name)
 
+    // Capture original install date so we can preserve it across the
+    // remove-and-reinstall path used here (lockfile restores shouldn't mark
+    // the lock as modified).
+    let preservedDate = info.installed
     if (sys.exists(grainDir) && info.version == "latest") {
       // Update: remove old version and reinstall from latest
       printer.info("  %{name} is pinned to latest, updating...")
       sys.remove(grainDir)
       registry.remove(lockFile, name)
-      installGrain(str(info.source), isGlobal, verbose, false)
+      installGrain(str(info.source), isGlobal, verbose, false, {}, preservedDate)
       updated = updated + 1
     } elif (sys.exists(grainDir)) {
       printer.info("  %{name}@%{info.version} already installed, skipping")
@@ -324,7 +335,7 @@ func installFromLockFile(isGlobal, verbose = false) {
       if (info.version && info.version != "latest") {
         spec = spec + "@" + info.version
       }
-      installGrain(spec, isGlobal, verbose, false)
+      installGrain(spec, isGlobal, verbose, false, {}, preservedDate)
       installed = installed + 1
     }
   }
