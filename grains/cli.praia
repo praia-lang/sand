@@ -29,23 +29,27 @@ func printUsage() {
   print("  Grains are installed to ext_grains/ by default.")
   print("  Use --global to install to ~/.praia/ext_grains/ instead.")
   print("  Use --verbose for detailed output (shows git commands, etc.)")
+  print("  Use --ignore-missing-deps to keep going when a transitive dep fails.")
 }
 
-// Parse flags from args, returns {global: bool, verbose: bool, rest: []}
+// Parse flags from args, returns {global, verbose, ignoreMissing, rest}
 func parseFlags(args) {
   let isGlobal = false
   let isVerbose = false
+  let ignoreMissing = false
   let rest = []
   for (arg in args) {
     if (arg == "--global" || arg == "-g") {
       isGlobal = true
     } elif (arg == "--verbose") {
       isVerbose = true
+    } elif (arg == "--ignore-missing-deps") {
+      ignoreMissing = true
     } else {
       push(rest, arg)
     }
   }
-  return { global: isGlobal, verbose: isVerbose, rest: rest }
+  return { global: isGlobal, verbose: isVerbose, ignoreMissing: ignoreMissing, rest: rest }
 }
 
 func getTargetDir(isGlobal) {
@@ -134,7 +138,15 @@ func cmdInit(args) {
 // `preserveInstalledDate` (string or nil): when restoring from sand-lock.yaml,
 // pass the original date so the lockfile isn't marked as modified by a fresh
 // install. Nil means "use today's date" (the normal install path).
-func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {}, preserveInstalledDate = nil) {
+//
+// `ignoreMissing` (bool): if true, transitive dep failures degrade to a
+// warning. If false (default), they propagate so the caller can roll back
+// the parent grain too.
+//
+// On failure this function ROLLS BACK its own state and re-throws. The
+// outermost (CLI) caller is responsible for catching the throw and exiting
+// with a non-zero code.
+func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {}, preserveInstalledDate = nil, ignoreMissing = false) {
   let parsed = git.parseSpec(spec)
   let name = parsed.name
   ensure (manifest.isValidName(name)) else {
@@ -264,24 +276,31 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
     // Mark this grain as in-flight for cycle detection in recursive deps.
     visited[name] = true
 
-    // Install transitive dependencies
-    try {
-      if (grainManifest && grainManifest.dependencies) {
-        let depKeys = keys(grainManifest.dependencies)
-        for (depName in depKeys) {
-          let depSource = grainManifest.dependencies[depName]
-          if (visited.has(depName)) {
-            printer.info("  Skipping dependency '%{depName}' (cycle)")
-            continue
-          }
-          if (!registry.get(lockFile, depName)) {
-            printer.info("  Installing dependency: %{depName}")
-            installGrain(str(depSource), isGlobal, verbose, false, visited)
+    // Install transitive dependencies. By default, a failure here propagates
+    // so the parent grain is also rolled back — a grain without its declared
+    // deps is broken. `--ignore-missing-deps` (passed from the CLI) demotes
+    // the failure to a warning for users who explicitly want partial installs.
+    if (grainManifest && grainManifest.dependencies) {
+      let depKeys = keys(grainManifest.dependencies)
+      for (depName in depKeys) {
+        let depSource = grainManifest.dependencies[depName]
+        if (visited.has(depName)) {
+          printer.info("  Skipping dependency '%{depName}' (cycle)")
+          continue
+        }
+        if (!registry.get(lockFile, depName)) {
+          printer.info("  Installing dependency: %{depName}")
+          if (ignoreMissing) {
+            try {
+              installGrain(str(depSource), isGlobal, verbose, false, visited, nil, ignoreMissing)
+            } catch (e) {
+              printer.warn("  Failed to install '%{depName}': %{e} (continuing — --ignore-missing-deps)")
+            }
+          } else {
+            installGrain(str(depSource), isGlobal, verbose, false, visited, nil, ignoreMissing)
           }
         }
       }
-    } catch (e) {
-      printer.warn("Failed to install transitive dependencies: " + str(e))
     }
   } catch (err) {
     if (!verbose) { spin.done() }
@@ -292,8 +311,9 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
     }
     try { registry.remove(lockFile, name) } catch (e) {}
     try { sys.remove(tmpDir) } catch (e) {}
-    printer.error("Failed to install %{name}: %{err}")
-    sys.exit(1)
+    // Re-throw so the caller (top-level cmd or parent installGrain) can
+    // decide whether to abort the chain or roll back further.
+    throw err
   }
 
   // Cleanup temp dir on success
@@ -313,7 +333,7 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
   }
 }
 
-func installFromLockFile(isGlobal, verbose = false) {
+func installFromLockFile(isGlobal, verbose = false, ignoreMissing = false) {
   let lockFile = getLockFile(isGlobal)
   let lock = registry.load(lockFile)
   let grainKeys = keys(lock.grains)
@@ -341,7 +361,7 @@ func installFromLockFile(isGlobal, verbose = false) {
       printer.info("  %{name} is pinned to latest, updating...")
       sys.remove(grainDir)
       registry.remove(lockFile, name)
-      installGrain(str(info.source), isGlobal, verbose, false, {}, preservedDate)
+      installGrain(str(info.source), isGlobal, verbose, false, {}, preservedDate, ignoreMissing)
       updated = updated + 1
     } elif (sys.exists(grainDir)) {
       printer.info("  %{name}@%{info.version} already installed, skipping")
@@ -352,7 +372,7 @@ func installFromLockFile(isGlobal, verbose = false) {
       if (info.version && info.version != "latest") {
         spec = spec + "@" + info.version
       }
-      installGrain(spec, isGlobal, verbose, false, {}, preservedDate)
+      installGrain(spec, isGlobal, verbose, false, {}, preservedDate, ignoreMissing)
       installed = installed + 1
     }
   }
@@ -369,10 +389,20 @@ func cmdInstall(args) {
   let flags = parseFlags(args)
 
   if (len(flags.rest) == 0) {
-    installFromLockFile(flags.global, flags.verbose)
+    try {
+      installFromLockFile(flags.global, flags.verbose, flags.ignoreMissing)
+    } catch (e) {
+      printer.error("Install failed: %{e}")
+      sys.exit(1)
+    }
   } else {
     for (spec in flags.rest) {
-      installGrain(spec, flags.global, flags.verbose)
+      try {
+        installGrain(spec, flags.global, flags.verbose, true, {}, nil, flags.ignoreMissing)
+      } catch (e) {
+        printer.error("Install failed: %{e}")
+        sys.exit(1)
+      }
     }
   }
 }
@@ -403,7 +433,12 @@ func cmdUpdate(args) {
     if (info.version && info.version != "latest") {
       spec = spec + "@" + info.version
     }
-    installGrain(spec, flags.global, flags.verbose, false)
+    try {
+      installGrain(spec, flags.global, flags.verbose, false, {}, nil, flags.ignoreMissing)
+    } catch (e) {
+      printer.error("Update failed: %{e}")
+      sys.exit(1)
+    }
   }
 
   if (len(flags.rest) == 0) {
@@ -481,7 +516,12 @@ func cmdLock(args) {
       // Clear stale state if either side is partial
       if (sys.exists(grainDir)) { sys.remove(grainDir) }
       if (lockEntry) { registry.remove(lockFile, depName) }
-      installGrain(depSource, false, flags.verbose, false)
+      try {
+        installGrain(depSource, false, flags.verbose, false, {}, nil, flags.ignoreMissing)
+      } catch (e) {
+        printer.error("Lock failed: %{e}")
+        sys.exit(1)
+      }
       installedCount = installedCount + 1
     }
   }
