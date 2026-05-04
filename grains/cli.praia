@@ -164,6 +164,12 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
   let tmpDir = sys.exec("mktemp -d").stdout.strip()
   let cloneDir = path.join(tmpDir, name)
 
+  // Track install-side state so we can roll back cleanly on any failure.
+  // `destDir` is set once we know the final install path (which depends on
+  // the manifest-declared name read inside the try block).
+  let destDir = ""
+  let destDirTouched = false
+
   try {
     if (verbose) { printer.info("Cloning %{parsed.url} -> %{cloneDir}") }
     else { spin.tick("Cloning %{parsed.url}...") }
@@ -219,10 +225,11 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
     // Copy the entire grain as a directory
     if (verbose) { printer.info("Copying to %{targetDir}/%{name}/") }
     else { spin.tick("Copying to %{targetDir}...") }
-    let destDir = path.join(targetDir, name)
+    destDir = path.join(targetDir, name)
     if (sys.exists(destDir)) {
       sys.remove(destDir)
     }
+    destDirTouched = true
     sys.copy(cloneDir, destDir)
 
     // Remove .git directory from the copy
@@ -275,11 +282,18 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
     }
   } catch (err) {
     if (!verbose) { spin.done() }
+    // Roll back partial state so we don't leave an orphaned grain dir
+    // (no lock entry) or stale lock entry pointing at nothing.
+    if (destDirTouched && sys.exists(destDir)) {
+      try { sys.remove(destDir) } catch (e) {}
+    }
+    try { registry.remove(lockFile, name) } catch (e) {}
+    try { sys.remove(tmpDir) } catch (e) {}
     printer.error("Failed to install %{name}: %{err}")
     sys.exit(1)
   }
 
-  // Cleanup temp dir
+  // Cleanup temp dir on success
   try { sys.remove(tmpDir) } catch (e) {}
 
   // Add to current project's grain.yaml if installing a new grain (not from lockfile)
