@@ -10,9 +10,12 @@ func printUsage() {
   print("")
   print("  sand init                  Create a grain.yaml in the current directory")
   print("  sand init --plugin         Create a grain with a native C++ plugin")
-  print("  sand install               Install or update all dependencies from grain.yaml or sand-lock.yaml")
+  print("  sand install               Restore grains from sand-lock.yaml")
   print("  sand install <url>         Install a grain from a Git URL")
   print("  sand install --global <url>  Install a grain globally")
+  print("  sand update                Re-fetch all grains pinned to 'latest'")
+  print("  sand update <name>         Re-fetch a single grain from its source")
+  print("  sand lock                  Sync sand-lock.yaml with grain.yaml (install missing deps)")
   print("  sand remove <name>         Remove a locally installed grain")
   print("  sand remove --global <name>  Remove a globally installed grain")
   print("  sand list                  List locally installed grains")
@@ -374,6 +377,122 @@ func cmdInstall(args) {
   }
 }
 
+// `sand update [name]` — re-fetch a grain from its source. Unlike
+// `sand install` (which restores), this is an intentional bump: today's date
+// is recorded in the lockfile.
+func cmdUpdate(args) {
+  let flags = parseFlags(args)
+  let lockFile = getLockFile(flags.global)
+  let targetDir = getTargetDir(flags.global)
+
+  let lock = registry.load(lockFile)
+  let grainKeys = keys(lock.grains)
+
+  if (len(grainKeys) == 0) {
+    printer.info("No grains installed")
+    return
+  }
+
+  // Helper: re-fetch a single grain by name. Assumes the entry exists.
+  func updateOne(name, info) {
+    printer.info("Updating %{name}...")
+    let grainDir = path.join(targetDir, name)
+    if (sys.exists(grainDir)) { sys.remove(grainDir) }
+    registry.remove(lockFile, name)
+    let spec = str(info.source)
+    if (info.version && info.version != "latest") {
+      spec = spec + "@" + info.version
+    }
+    installGrain(spec, flags.global, flags.verbose, false)
+  }
+
+  if (len(flags.rest) == 0) {
+    // Update every grain pinned to "latest"
+    let updated = 0
+    for (name in grainKeys) {
+      let info = lock.grains[name]
+      if (info.version == "latest") {
+        updateOne(name, info)
+        updated = updated + 1
+      }
+    }
+    if (updated == 0) {
+      printer.info("No grains pinned to 'latest' to update")
+    } else {
+      printer.success("Updated %{updated} grain(s)")
+    }
+  } else {
+    // Update each named grain
+    for (name in flags.rest) {
+      ensure (manifest.isValidName(name)) else {
+        printer.error("Invalid grain name: '%{name}'")
+        sys.exit(1)
+      }
+      let info = registry.get(lockFile, name)
+      if (!info) {
+        printer.error("Grain '%{name}' is not installed")
+        sys.exit(1)
+      }
+      updateOne(name, info)
+    }
+  }
+}
+
+// `sand lock` — sync sand-lock.yaml with grain.yaml. Installs any dep that's
+// declared in grain.yaml but missing from the lockfile or ext_grains/. Useful
+// after manual edits to grain.yaml. Does NOT prune lockfile entries (those
+// may be transitive dependencies the user can't see in grain.yaml).
+func cmdLock(args) {
+  let flags = parseFlags(args)
+
+  if (flags.global) {
+    printer.error("'sand lock' has no global mode (lockfile is per-project)")
+    sys.exit(1)
+  }
+
+  let cwd = sys.cwd()
+  let manifestPath = path.join(cwd, config.MANIFEST_NAME)
+  ensure (sys.exists(manifestPath)) else {
+    printer.error("No %{config.MANIFEST_NAME} found in the current directory")
+    sys.exit(1)
+  }
+
+  let m = manifest.read(cwd)
+  let lockFile = getLockFile(false)
+  let targetDir = getTargetDir(false)
+
+  if (!m.dependencies) {
+    printer.info("No dependencies declared in %{config.MANIFEST_NAME}")
+    return
+  }
+  let depKeys = keys(m.dependencies)
+  if (len(depKeys) == 0) {
+    printer.info("No dependencies declared in %{config.MANIFEST_NAME}")
+    return
+  }
+
+  let installedCount = 0
+  for (depName in depKeys) {
+    let depSource = str(m.dependencies[depName])
+    let lockEntry = registry.get(lockFile, depName)
+    let grainDir = path.join(targetDir, depName)
+    let needsInstall = !lockEntry || !sys.exists(grainDir)
+    if (needsInstall) {
+      // Clear stale state if either side is partial
+      if (sys.exists(grainDir)) { sys.remove(grainDir) }
+      if (lockEntry) { registry.remove(lockFile, depName) }
+      installGrain(depSource, false, flags.verbose, false)
+      installedCount = installedCount + 1
+    }
+  }
+
+  if (installedCount == 0) {
+    printer.success("Lockfile is up to date")
+  } else {
+    printer.success("Locked %{installedCount} grain(s)")
+  }
+}
+
 func cmdRemove(args) {
   let flags = parseFlags(args)
 
@@ -496,6 +615,8 @@ func run(args) {
 
   if (cmd == "init") { cmdInit(rest) }
   elif (cmd == "install" || cmd == "i") { cmdInstall(rest) }
+  elif (cmd == "update" || cmd == "up") { cmdUpdate(rest) }
+  elif (cmd == "lock") { cmdLock(rest) }
   elif (cmd == "remove" || cmd == "rm") { cmdRemove(rest) }
   elif (cmd == "list" || cmd == "ls") { cmdList(rest) }
   elif (cmd == "info") { cmdInfo(rest) }
