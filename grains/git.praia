@@ -1,3 +1,24 @@
+// Reject URLs that could be parsed as a git option, contain whitespace,
+// or are otherwise unsafe to pass to `git clone`. Accepts the common URL
+// forms (https://, http://, file://, git@host:path) and bare host/path
+// (parseSpec prepends https://). Printable-ASCII only.
+func isValidUrl(url) {
+  if (!url || type(url) != "string") { return false }
+  if (len(url) == 0) { return false }
+  if (url.startsWith("-")) { return false }
+  return url.test("^[!-~]+$")
+}
+
+// Refs/tags/branches. Conservative: alnum, dot, underscore, slash, plus,
+// dash (not leading). Covers every real-world tag we'd encounter and
+// rules out anything that could be parsed as a git option by `checkout`.
+func isValidRef(ref) {
+  if (!ref || type(ref) != "string") { return false }
+  if (len(ref) == 0 || len(ref) > 200) { return false }
+  if (ref.startsWith("-")) { return false }
+  return ref.test("^[a-zA-Z0-9._+/-]+$")
+}
+
 func parseSpec(spec) {
   let version = nil
   let urlPart = spec
@@ -31,12 +52,27 @@ func parseSpec(spec) {
     fullUrl = "%{fullUrl}.git"
   }
 
+  // Validate at the gate so every code path that builds a git URL
+  // gets checked once, regardless of how the URL was massaged.
+  if (!isValidUrl(fullUrl)) {
+    throw "Invalid grain URL: %{spec}"
+  }
+  if (version != nil && !isValidRef(version)) {
+    throw "Invalid grain version: %{version}"
+  }
+
   return { url: fullUrl, version: version, name: name }
 }
 
 func clone(url, dest, verbose = false) {
+  // Re-validate even though parseSpec already does — defense in depth
+  // for callers that bypass parseSpec.
+  if (!isValidUrl(url)) { throw "Invalid clone URL" }
   let cmd = ["git", "clone"]
   if (!verbose) { push(cmd, "--quiet") }
+  // -- ensures git treats the URL as positional, not an option, even
+  // if a future caller slips a string starting with `-` past validation.
+  push(cmd, "--")
   push(cmd, url)
   push(cmd, dest)
   let r = sys.exec(cmd)
@@ -49,8 +85,12 @@ func clone(url, dest, verbose = false) {
 }
 
 func checkout(dir, tag, verbose = false) {
+  // `git checkout -- <ref>` means "restore <ref> from index", not "check out
+  // ref <ref>". So we can't use `--` here — validation is the only line
+  // of defense. Skip any attempt that doesn't pass isValidRef.
   let attempts = [tag, "v%{tag}"]
   for (attempt in attempts) {
+    if (!isValidRef(attempt)) { continue }
     let cmd = ["git", "-C", dir, "checkout"]
     if (!verbose) { push(cmd, "--quiet") }
     push(cmd, attempt)
@@ -61,4 +101,4 @@ func checkout(dir, tag, verbose = false) {
   throw "Version '%{tag}' not found (tried tag '%{tag}', 'v%{tag}')"
 }
 
-export { parseSpec, clone, checkout }
+export { parseSpec, clone, checkout, isValidUrl, isValidRef }
