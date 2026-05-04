@@ -8,13 +8,46 @@ func has(m, key) {
   return false
 }
 
+// Match GitHub-ish naming: alphanumerics, _, -. Must start alphanumeric.
+// Length-bounded to avoid pathological filenames.
+func isValidName(name) {
+  if (!name || type(name) != "string") { return false }
+  if (len(name) == 0 || len(name) > 64) { return false }
+  return name.test("^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
+}
+
+// Reject absolute paths, parent traversal, anything that isn't a .praia file.
+// Used for the `main` field in grain.yaml — must be a path relative to the
+// grain directory.
+func isValidMainPath(p) {
+  if (!p || type(p) != "string") { return false }
+  if (len(p) == 0) { return false }
+  if (p.startsWith("/") || p.startsWith("\\")) { return false }
+  if (p.contains("..")) { return false }
+  if (!p.endsWith(".praia")) { return false }
+  return true
+}
+
 func read(dir) {
   let filepath = path.join(dir, config.MANIFEST_NAME)
   ensure (sys.exists(filepath)) else {
     throw "No grain.yaml found in %{dir}"
   }
   let content = sys.read(filepath)
-  return yaml.parse(content)
+  let m = yaml.parse(content)
+  if (!m) { return m }
+  // Validate untrusted manifest fields at the source so all callers are safe.
+  if (has(m, "name") && m.name) {
+    ensure (isValidName(m.name)) else {
+      throw "Invalid grain name in %{filepath}: '%{m.name}' (must match [a-zA-Z0-9][a-zA-Z0-9_-]*)"
+    }
+  }
+  if (has(m, "main") && m.main) {
+    ensure (isValidMainPath(m.main)) else {
+      throw "Invalid main path in %{filepath}: '%{m.main}' (must be a relative .praia file, no '..')"
+    }
+  }
+  return m
 }
 
 func write(dir, m) {
@@ -82,4 +115,4 @@ func removeDep(dir, name) {
   }
 }
 
-export { read, write, create, addDep, removeDep }
+export { read, write, create, addDep, removeDep, isValidName, isValidMainPath }

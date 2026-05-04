@@ -127,6 +127,9 @@ func cmdInit(args) {
 func installGrain(spec, isGlobal, verbose = false, addToDeps = true) {
   let parsed = git.parseSpec(spec)
   let name = parsed.name
+  ensure (manifest.isValidName(name)) else {
+    throw "Invalid grain name derived from spec '%{spec}': '%{name}' (must match [a-zA-Z0-9][a-zA-Z0-9_-]*)"
+  }
   let targetDir = getTargetDir(isGlobal)
   let lockFile = getLockFile(isGlobal)
 
@@ -330,6 +333,10 @@ func cmdRemove(args) {
   }
 
   let name = flags.rest[0]
+  ensure (manifest.isValidName(name)) else {
+    printer.error("Invalid grain name: '%{name}'")
+    sys.exit(1)
+  }
   let targetDir = getTargetDir(flags.global)
   let lockFile = getLockFile(flags.global)
 
