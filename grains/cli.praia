@@ -176,7 +176,7 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
   if (!verbose) { spin.tick() }
 
   // Clone to temp dir
-  let tmpDir = sys.exec("mktemp -d").stdout.strip()
+  let tmpDir = sys.tempDir("sand")
   let cloneDir = path.join(tmpDir, name)
 
   // Track install-side state so we can roll back cleanly on any failure.
