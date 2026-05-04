@@ -124,12 +124,24 @@ func cmdInit(args) {
   }
 }
 
-func installGrain(spec, isGlobal, verbose = false, addToDeps = true) {
+// `visited` is a map of grain names → true, used to detect cycles in
+// transitive dependency installs (e.g. A → B → A). Top-level callers omit it
+// so each fresh install starts with an empty set.
+func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {}) {
   let parsed = git.parseSpec(spec)
   let name = parsed.name
   ensure (manifest.isValidName(name)) else {
     throw "Invalid grain name derived from spec '%{spec}': '%{name}' (must match [a-zA-Z0-9][a-zA-Z0-9_-]*)"
   }
+
+  // Cycle short-circuit: if this grain is already being installed in the
+  // current chain, stop. (Lockfile registration also catches this in normal
+  // flow, but a per-chain visited set is the canonical signal.)
+  if (visited.has(name)) {
+    printer.info("  Skipping '%{name}' (already in install chain — cycle)")
+    return
+  }
+
   let targetDir = getTargetDir(isGlobal)
   let lockFile = getLockFile(isGlobal)
 
@@ -172,7 +184,13 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true) {
       // Use the grain's declared name for the install directory
       if (grainManifest.name && grainManifest.name != name) {
         name = grainManifest.name
-        // Re-check if already installed under the grain name
+        // Re-check cycle and lockfile under the manifest-declared name
+        if (visited.has(name)) {
+          spin.done()
+          printer.info("  Skipping '%{name}' (already in install chain — cycle)")
+          try { sys.remove(tmpDir) } catch (e) {}
+          return
+        }
         let existingByName = registry.get(lockFile, name)
         if (existingByName) {
           spin.done()
@@ -226,15 +244,22 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true) {
     if (!verbose) { spin.done() }
     printer.success("Installed %{name}@%{version} -> %{location}%{name}/")
 
+    // Mark this grain as in-flight for cycle detection in recursive deps.
+    visited[name] = true
+
     // Install transitive dependencies
     try {
       if (grainManifest && grainManifest.dependencies) {
         let depKeys = keys(grainManifest.dependencies)
         for (depName in depKeys) {
           let depSource = grainManifest.dependencies[depName]
+          if (visited.has(depName)) {
+            printer.info("  Skipping dependency '%{depName}' (cycle)")
+            continue
+          }
           if (!registry.get(lockFile, depName)) {
             printer.info("  Installing dependency: %{depName}")
-            installGrain(str(depSource), isGlobal, verbose, false)
+            installGrain(str(depSource), isGlobal, verbose, false, visited)
           }
         }
       }
