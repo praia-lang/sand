@@ -1,8 +1,8 @@
 func load(lockPath) {
-  if (!sys.exists(lockPath)) {
+  if (!fs.exists(lockPath)) {
     return { grains: {} }
   }
-  let content = sys.read(lockPath)
+  let content = fs.read(lockPath)
   if (len(content.strip()) == 0) {
     return { grains: {} }
   }
@@ -29,7 +29,7 @@ func save(lockPath, lock) {
       lines = lines + "    installed: %{info.installed}\n"
     }
   }
-  sys.write(lockPath, lines)
+  fs.write(lockPath, lines)
 }
 
 func add(lockPath, name, info) {

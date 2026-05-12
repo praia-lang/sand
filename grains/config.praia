@@ -2,7 +2,7 @@ let MANIFEST_NAME = "grain.yaml"
 
 // Read version from grain.yaml so it's defined in one place
 let _sandDir = path.dirname(path.dirname(sys.currentFile()))
-let _manifest = yaml.parse(sys.read(path.join(_sandDir, MANIFEST_NAME)))
+let _manifest = yaml.parse(fs.read(path.join(_sandDir, MANIFEST_NAME)))
 let SAND_VERSION = _manifest.version
 let LOCK_NAME = "sand-lock.yaml"
 let DEFAULT_MAIN = "main.praia"
@@ -47,8 +47,8 @@ func localLockFile() {
 }
 
 func ensureDir(dir) {
-  if (!sys.exists(dir)) {
-    sys.mkdir(dir)
+  if (!fs.exists(dir)) {
+    fs.mkdir(dir)
   }
 }
 

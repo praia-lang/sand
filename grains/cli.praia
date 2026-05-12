@@ -83,7 +83,7 @@ func cmdInit(args) {
   let dir = sys.cwd()
   let manifestPath = path.join(dir, config.MANIFEST_NAME)
 
-  if (sys.exists(manifestPath)) {
+  if (fs.exists(manifestPath)) {
     printer.warn("grain.yaml already exists in this directory")
     return
   }
@@ -93,30 +93,30 @@ func cmdInit(args) {
   manifest.write(dir, m)
 
   let mainPath = path.join(dir, config.DEFAULT_MAIN)
-  if (!sys.exists(mainPath)) {
+  if (!fs.exists(mainPath)) {
     if (isPlugin) {
-      sys.write(mainPath, "let ext = \".dylib\"\nif (sys.platform != \"darwin\") { ext = \".so\" }\n\nlet _native = loadNative(path.dirname(sys.currentFile()) + \"/plugins/%{name}\" + ext)\n\n// Export your plugin functions here\n// let myFunc = _native.myFunc\n// export { myFunc }\n")
+      fs.write(mainPath, "let ext = \".dylib\"\nif (sys.platform != \"darwin\") { ext = \".so\" }\n\nlet _native = loadNative(path.dirname(sys.currentFile()) + \"/plugins/%{name}\" + ext)\n\n// Export your plugin functions here\n// let myFunc = _native.myFunc\n// export { myFunc }\n")
     } else {
-      sys.write(mainPath, "print('Hello from %{name}!')\n")
+      fs.write(mainPath, "print('Hello from %{name}!')\n")
     }
   }
 
   if (isPlugin) {
     // Create plugins/ directory with C++ template
     let pluginsDir = path.join(dir, "plugins")
-    if (!sys.exists(pluginsDir)) {
-      sys.mkdir(pluginsDir)
+    if (!fs.exists(pluginsDir)) {
+      fs.mkdir(pluginsDir)
     }
 
     let cppPath = path.join(pluginsDir, name + ".cpp")
-    if (!sys.exists(cppPath)) {
-      sys.write(cppPath, "#include \"praia_plugin.h\"\n\nextern \"C\" void praia_register(PraiaMap* module) {\n    module->entries[\"hello\"] = Value(makeNative(\"%{name}.hello\", 0,\n        [](const std::vector<Value>& args) -> Value {\n            return Value(std::string(\"Hello from %{name}!\"));\n        }));\n}\n")
+    if (!fs.exists(cppPath)) {
+      fs.write(cppPath, "#include \"praia_plugin.h\"\n\nextern \"C\" void praia_register(PraiaMap* module) {\n    module->entries[\"hello\"] = Value(makeNative(\"%{name}.hello\", 0,\n        [](const std::vector<Value>& args) -> Value {\n            return Value(std::string(\"Hello from %{name}!\"));\n        }));\n}\n")
     }
 
     // Create Makefile
     let makefilePath = path.join(dir, "Makefile")
-    if (!sys.exists(makefilePath)) {
-      sys.write(makefilePath, "PRAIA_INCLUDE := $(shell praia --include-path)\nUNAME_S := $(shell uname -s)\n\nifeq ($(UNAME_S),Darwin)\n  EXT = .dylib\n  LDFLAGS = -undefined dynamic_lookup\nelse\n  EXT = .so\n  LDFLAGS =\nendif\n\nall:\n\tg++ -std=c++17 -shared -fPIC -I$(PRAIA_INCLUDE) $(LDFLAGS) -o plugins/%{name}$(EXT) plugins/%{name}.cpp\n\nclean:\n\trm -f plugins/%{name}.dylib plugins/%{name}.so\n\n.PHONY: all clean\n")
+    if (!fs.exists(makefilePath)) {
+      fs.write(makefilePath, "PRAIA_INCLUDE := $(shell praia --include-path)\nUNAME_S := $(shell uname -s)\n\nifeq ($(UNAME_S),Darwin)\n  EXT = .dylib\n  LDFLAGS = -undefined dynamic_lookup\nelse\n  EXT = .so\n  LDFLAGS =\nendif\n\nall:\n\tg++ -std=c++17 -shared -fPIC -I$(PRAIA_INCLUDE) $(LDFLAGS) -o plugins/%{name}$(EXT) plugins/%{name}.cpp\n\nclean:\n\trm -f plugins/%{name}.dylib plugins/%{name}.so\n\n.PHONY: all clean\n")
     }
 
     printer.success("Created plugin grain '%{name}' with:")
@@ -176,7 +176,7 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
   if (!verbose) { spin.tick() }
 
   // Clone to temp dir
-  let tmpDir = sys.tempDir("sand")
+  let tmpDir = fs.tempDir("sand")
   let cloneDir = path.join(tmpDir, name)
 
   // Track install-side state so we can roll back cleanly on any failure.
@@ -201,7 +201,7 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
     let mainFile = config.DEFAULT_MAIN
     let grainManifestPath = path.join(cloneDir, config.MANIFEST_NAME)
     let grainManifest = nil
-    if (sys.exists(grainManifestPath)) {
+    if (fs.exists(grainManifestPath)) {
       grainManifest = manifest.read(cloneDir)
       if (grainManifest.main) {
         mainFile = grainManifest.main
@@ -213,7 +213,7 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
         if (visited.has(name)) {
           spin.done()
           printer.info("  Skipping '%{name}' (already in install chain — cycle)")
-          try { sys.remove(tmpDir) } catch (e) {}
+          try { fs.remove(tmpDir) } catch (e) {}
           return
         }
         let existingByName = registry.get(lockFile, name)
@@ -221,7 +221,7 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
           spin.done()
           printer.warn("'%{name}' is already installed (source: %{existingByName.source})")
           printer.info("Use 'sand remove %{name}' first to reinstall")
-          try { sys.remove(tmpDir) } catch (e) {}
+          try { fs.remove(tmpDir) } catch (e) {}
           return
         }
       }
@@ -229,7 +229,7 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
 
     // Verify entry file exists
     let srcEntry = path.join(cloneDir, mainFile)
-    ensure (sys.exists(srcEntry)) else {
+    ensure (fs.exists(srcEntry)) else {
       spin.done()
       throw "Entry file '%{mainFile}' not found in grain repository"
     }
@@ -241,16 +241,16 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
     if (verbose) { printer.info("Copying to %{targetDir}/%{name}/") }
     else { spin.tick("Copying to %{targetDir}...") }
     destDir = path.join(targetDir, name)
-    if (sys.exists(destDir)) {
-      sys.remove(destDir)
+    if (fs.exists(destDir)) {
+      fs.remove(destDir)
     }
     destDirTouched = true
-    sys.copy(cloneDir, destDir)
+    fs.copy(cloneDir, destDir)
 
     // Remove .git directory from the copy
     let dotGit = path.join(destDir, ".git")
-    if (sys.exists(dotGit)) {
-      sys.remove(dotGit)
+    if (fs.exists(dotGit)) {
+      fs.remove(dotGit)
     }
 
     // Register in lock file
@@ -306,23 +306,23 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
     if (!verbose) { spin.done() }
     // Roll back partial state so we don't leave an orphaned grain dir
     // (no lock entry) or stale lock entry pointing at nothing.
-    if (destDirTouched && sys.exists(destDir)) {
-      try { sys.remove(destDir) } catch (e) {}
+    if (destDirTouched && fs.exists(destDir)) {
+      try { fs.remove(destDir) } catch (e) {}
     }
     try { registry.remove(lockFile, name) } catch (e) {}
-    try { sys.remove(tmpDir) } catch (e) {}
+    try { fs.remove(tmpDir) } catch (e) {}
     // Re-throw so the caller (top-level cmd or parent installGrain) can
     // decide whether to abort the chain or roll back further.
     throw err
   }
 
   // Cleanup temp dir on success
-  try { sys.remove(tmpDir) } catch (e) {}
+  try { fs.remove(tmpDir) } catch (e) {}
 
   // Add to current project's grain.yaml if installing a new grain (not from lockfile)
   if (addToDeps && !isGlobal) {
     let cwd = sys.cwd()
-    if (sys.exists(path.join(cwd, config.MANIFEST_NAME))) {
+    if (fs.exists(path.join(cwd, config.MANIFEST_NAME))) {
       try {
         manifest.addDep(cwd, name, spec)
         printer.info("Added %{name} to grain.yaml dependencies")
@@ -356,14 +356,14 @@ func installFromLockFile(isGlobal, verbose = false, ignoreMissing = false) {
     // remove-and-reinstall path used here (lockfile restores shouldn't mark
     // the lock as modified).
     let preservedDate = info.installed
-    if (sys.exists(grainDir) && info.version == "latest") {
+    if (fs.exists(grainDir) && info.version == "latest") {
       // Update: remove old version and reinstall from latest
       printer.info("  %{name} is pinned to latest, updating...")
-      sys.remove(grainDir)
+      fs.remove(grainDir)
       registry.remove(lockFile, name)
       installGrain(str(info.source), isGlobal, verbose, false, {}, preservedDate, ignoreMissing)
       updated = updated + 1
-    } elif (sys.exists(grainDir)) {
+    } elif (fs.exists(grainDir)) {
       printer.info("  %{name}@%{info.version} already installed, skipping")
     } else {
       // Directory missing — remove stale lock entry so installGrain doesn't skip it
@@ -427,7 +427,7 @@ func cmdUpdate(args) {
   func updateOne(name, info) {
     printer.info("Updating %{name}...")
     let grainDir = path.join(targetDir, name)
-    if (sys.exists(grainDir)) { sys.remove(grainDir) }
+    if (fs.exists(grainDir)) { fs.remove(grainDir) }
     registry.remove(lockFile, name)
     let spec = str(info.source)
     if (info.version && info.version != "latest") {
@@ -487,7 +487,7 @@ func cmdLock(args) {
 
   let cwd = sys.cwd()
   let manifestPath = path.join(cwd, config.MANIFEST_NAME)
-  ensure (sys.exists(manifestPath)) else {
+  ensure (fs.exists(manifestPath)) else {
     printer.error("No %{config.MANIFEST_NAME} found in the current directory")
     sys.exit(1)
   }
@@ -511,10 +511,10 @@ func cmdLock(args) {
     let depSource = str(m.dependencies[depName])
     let lockEntry = registry.get(lockFile, depName)
     let grainDir = path.join(targetDir, depName)
-    let needsInstall = !lockEntry || !sys.exists(grainDir)
+    let needsInstall = !lockEntry || !fs.exists(grainDir)
     if (needsInstall) {
       // Clear stale state if either side is partial
-      if (sys.exists(grainDir)) { sys.remove(grainDir) }
+      if (fs.exists(grainDir)) { fs.remove(grainDir) }
       if (lockEntry) { registry.remove(lockFile, depName) }
       try {
         installGrain(depSource, false, flags.verbose, false, {}, nil, flags.ignoreMissing)
@@ -557,14 +557,14 @@ func cmdRemove(args) {
 
   // Remove the grain directory
   let grainDir = path.join(targetDir, name)
-  if (sys.exists(grainDir)) {
-    sys.remove(grainDir)
+  if (fs.exists(grainDir)) {
+    fs.remove(grainDir)
   }
 
   // Also remove single-file grain if it exists
   let grainFile = path.join(targetDir, "%{name}.praia")
-  if (sys.exists(grainFile)) {
-    sys.remove(grainFile)
+  if (fs.exists(grainFile)) {
+    fs.remove(grainFile)
   }
 
   registry.remove(lockFile, name)
@@ -573,7 +573,7 @@ func cmdRemove(args) {
   // Also remove from current project's grain.yaml if present and local
   if (!flags.global) {
     let cwd = sys.cwd()
-    if (sys.exists(path.join(cwd, config.MANIFEST_NAME))) {
+    if (fs.exists(path.join(cwd, config.MANIFEST_NAME))) {
       manifest.removeDep(cwd, name)
       printer.info("Removed %{name} from grain.yaml dependencies")
     }

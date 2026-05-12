@@ -30,10 +30,10 @@ func isValidMainPath(p) {
 
 func read(dir) {
   let filepath = path.join(dir, config.MANIFEST_NAME)
-  ensure (sys.exists(filepath)) else {
+  ensure (fs.exists(filepath)) else {
     throw "No grain.yaml found in %{dir}"
   }
-  let content = sys.read(filepath)
+  let content = fs.read(filepath)
   let m = yaml.parse(content)
   if (!m) { return m }
   // Validate untrusted manifest fields at the source so all callers are safe.
@@ -76,7 +76,7 @@ func write(dir, m) {
       }
     }
   }
-  sys.write(filepath, lines)
+  fs.write(filepath, lines)
 }
 
 func create(name) {
