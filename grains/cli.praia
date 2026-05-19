@@ -324,8 +324,16 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
         fs.move(newDir, destDir)
       } catch (err) {
         // Restore the old install so the user still has a working sand.
+        // If the restore succeeds, clear destDirTouched so the OUTER
+        // catch (which fires after we re-throw) doesn't then turn
+        // around and delete the freshly-restored sand. Without this
+        // reset, a failed atomic swap leaves the user with NO sand
+        // at all.
         if (fs.exists(bakDir) && !fs.exists(destDir)) {
-          try { fs.move(bakDir, destDir) } catch (e) {}
+          try {
+            fs.move(bakDir, destDir)
+            destDirTouched = false
+          } catch (e) {}
         }
         if (fs.exists(newDir)) { try { fs.remove(newDir) } catch (e) {} }
         throw err

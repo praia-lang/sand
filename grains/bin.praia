@@ -35,14 +35,36 @@ func praiaPath() {
   return "/usr/local/bin/praia"
 }
 
+// POSIX single-quote escape for shell. Wraps the input in `'…'` and
+// replaces any embedded `'` with the canonical `'\''` sequence. Safe
+// for any byte sequence — single-quoted strings in sh have no escape
+// processing, so the only character that needs special handling is
+// the quote itself. Prevents wrapper-injection when a grain ships a
+// `bin:` script path containing shell metacharacters like `"`, `$`,
+// backticks, or `;`.
+func shellQuote(s) {
+  let out = "'"
+  for (ch in s) {
+    if (ch == "'") {
+      out = out + "'\\''"
+    } else {
+      out = out + ch
+    }
+  }
+  out = out + "'"
+  return out
+}
+
 // Exact text of a sand-managed wrapper. The format MUST match the
-// Makefile's bootstrap printf byte-for-byte (a test asserts this)
-// so `sand install -g sand@<ver>` regenerates exactly what
-// `make install` wrote.
+// Makefile/release.yml/install.sh bootstrap output byte-for-byte
+// (a test asserts this) so `sand install -g sand@<ver>` regenerates
+// exactly what the install path wrote. Paths are POSIX single-quoted
+// rather than double-quoted so a grain can't smuggle shell metachars
+// (`"`, `$`, backticks) into the wrapper.
 func wrapperContent(name, praiaAbsPath, scriptAbsPath) {
   let lines = "#!/bin/sh\n"
   lines = lines + SENTINEL + name + "\n"
-  lines = lines + "exec \"" + praiaAbsPath + "\" \"" + scriptAbsPath + "\" \"$@\"\n"
+  lines = lines + "exec " + shellQuote(praiaAbsPath) + " " + shellQuote(scriptAbsPath) + " \"$@\"\n"
   return lines
 }
 
@@ -69,6 +91,12 @@ func isSandManaged(filepath) {
 // grains never pass this.
 func install(grainDir, manifestMap, binDir, allowReserved = false) {
   let written = []
+  // Per-target backup. Entry shape: {target, existed, content, mode}.
+  // `existed` distinguishes "we created this file from scratch" (rollback
+  // should remove it) from "we overwrote a sand-managed wrapper from a
+  // previous install" (rollback should restore its original bytes + mode
+  // so the user keeps the working CLI they had before).
+  let backups = []
   if (!manifestMap.bin) { return written }
   let binKeys = keys(manifestMap.bin)
   try {
@@ -88,19 +116,42 @@ func install(grainDir, manifestMap, binDir, allowReserved = false) {
         throw "Bin entry '%{name}' points at missing file %{scriptAbs}"
       }
       let target = path.join(binDir, name)
-      if (fs.exists(target) && !isSandManaged(target)) {
+      let existed = fs.exists(target)
+      if (existed && !isSandManaged(target)) {
         throw "Refusing to overwrite %{target} (not a sand-managed wrapper)"
       }
+      // Snapshot the existing wrapper (if any) before we overwrite it,
+      // so a later failure in this batch can restore the user's prior
+      // CLI rather than vaporize it.
+      let prevContent = nil
+      let prevMode = nil
+      if (existed) {
+        try { prevContent = fs.read(target) } catch (e) {}
+        try { prevMode = fs.stat(target).mode } catch (e) {}
+      }
+      backups.push({target: target, existed: existed,
+                    content: prevContent, mode: prevMode})
       fs.atomicWrite(target, wrapperContent(name, praiaPath(), scriptAbs))
       fs.chmod(target, 0o755)
       written.push(target)
     }
   } catch (err) {
-    // All-or-nothing: if any entry fails, undo every wrapper we
-    // already wrote in this call so the caller never has to know
-    // about half-installed state.
-    for (p in written) {
-      try { fs.remove(p) } catch (e) {}
+    // All-or-nothing rollback. Files that didn't exist before this
+    // call get unlinked; files that did exist (sand-managed wrappers
+    // from a prior install of the same grain) get their bytes and
+    // mode restored. Each step is best-effort — losing rollback for
+    // one entry shouldn't stop us from trying the rest.
+    for (b in backups) {
+      if (b.existed) {
+        try {
+          if (b.content != nil) { fs.atomicWrite(b.target, b.content) }
+          if (b.mode != nil)    { fs.chmod(b.target, b.mode) }
+        } catch (e) {}
+      } else {
+        if (fs.exists(b.target)) {
+          try { fs.remove(b.target) } catch (e) {}
+        }
+      }
     }
     throw err
   }
