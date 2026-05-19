@@ -4,4 +4,6 @@ description: The package manager for Praia
 author: Viggo Lekdorf
 license: MIT
 main: main.praia
+bin:
+  sand: main.praia
 dependencies:
