@@ -23,11 +23,19 @@ func isReserved(name) {
 }
 
 // Absolute path to the praia interpreter the wrapper should exec.
-// Derived from `sys.libdir` (`<prefix>/lib/praia`) → `<prefix>/bin/praia`,
-// with `/usr/local/bin/praia` as the fallback for builds without
-// PRAIA_LIBDIR baked in. We bake the path at install time so the
-// wrapper doesn't depend on `praia` being on PATH at run time.
+// Preference order:
+//   1. `sys.executable` — canonical path of the currently-running
+//      binary. Always correct: production sand runs from the
+//      installed praia and points wrappers at it; dev/test sand
+//      points wrappers at the dev binary it was run with. Means
+//      tests don't depend on a stray /usr/local/bin/praia.
+//   2. `<prefix>/bin/praia` derived from `sys.libdir` — fallback for
+//      hypothetical builds where executable resolution failed.
+//   3. `/usr/local/bin/praia` — last-resort universal default.
+// The path is baked into the wrapper at install time so the wrapper
+// doesn't depend on `praia` being on PATH at run time.
 func praiaPath() {
+  if (sys.executable) { return sys.executable }
   let libdir = sys.libdir
   if (libdir) {
     return path.join(path.dirname(path.dirname(libdir)), "bin", "praia")
