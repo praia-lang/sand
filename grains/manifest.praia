@@ -28,6 +28,19 @@ func isValidMainPath(p) {
   return true
 }
 
+// `bin:` entry names become files in $BINDIR — must follow the same
+// charset as grain names (no slashes, no leading dot, no surprises that
+// could let a manifest write outside the intended directory).
+func isValidBinName(name) {
+  return isValidName(name)
+}
+
+// `bin:` entry values are relative paths within the grain that resolve
+// to a .praia script. Same restrictions as `main:`.
+func isValidBinPath(p) {
+  return isValidMainPath(p)
+}
+
 func read(dir) {
   let filepath = path.join(dir, config.MANIFEST_NAME)
   ensure (fs.exists(filepath)) else {
@@ -45,6 +58,23 @@ func read(dir) {
   if (has(m, "main") && m.main) {
     ensure (isValidMainPath(m.main)) else {
       throw "Invalid main path in %{filepath}: '%{m.main}' (must be a relative .praia file, no '..')"
+    }
+  }
+  // `bin:` declares CLI wrappers planted on PATH at install time. Each
+  // key becomes a filename in the bindir, each value points at a script
+  // inside the grain — both need the same path-safety guard as `main`.
+  // Reserved names (sand/praia) are enforced one layer up at install
+  // time, not here, since sand's own grain.yaml legitimately declares
+  // `bin: { sand: main.praia }`.
+  if (has(m, "bin") && m.bin) {
+    let binKeys = keys(m.bin)
+    for (k in binKeys) {
+      ensure (isValidBinName(k)) else {
+        throw "Invalid bin name '%{k}' in %{filepath} (must match [a-zA-Z0-9][a-zA-Z0-9_-]*)"
+      }
+      ensure (isValidBinPath(m.bin[k])) else {
+        throw "Invalid bin path for '%{k}' in %{filepath}: '%{m.bin[k]}' (must be a relative .praia file, no '..')"
+      }
     }
   }
   return m
@@ -66,6 +96,15 @@ func write(dir, m) {
   }
   if (has(m, "main") && m.main) {
     lines = lines + "main: %{m.main}\n"
+  }
+  if (has(m, "bin") && m.bin) {
+    let binKeys = keys(m.bin)
+    if (len(binKeys) > 0) {
+      lines = lines + "bin:\n"
+      for (k in binKeys) {
+        lines = lines + "  %{k}: %{m.bin[k]}\n"
+      }
+    }
   }
   lines = lines + "dependencies:\n"
   if (has(m, "dependencies") && m.dependencies) {
@@ -115,4 +154,4 @@ func removeDep(dir, name) {
   }
 }
 
-export { read, write, create, addDep, removeDep, isValidName, isValidMainPath }
+export { read, write, create, addDep, removeDep, isValidName, isValidMainPath, isValidBinName, isValidBinPath }

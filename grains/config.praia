@@ -46,6 +46,33 @@ func localLockFile() {
   return path.join(sys.cwd(), LOCK_NAME)
 }
 
+// User-global bindir: ~/.praia/bin/. Mirrors userGlobalDir() — same
+// directory tree, so wrappers for user-scope grains land next to the
+// grains they wrap.
+func userBinDir() {
+  return path.join(home(), ".praia", "bin")
+}
+
+// System-global bindir: derived from sys.libdir.
+// libdir is `<prefix>/lib/praia`, so the matching bindir is
+// `<prefix>/bin` — two `path.dirname` calls peel off the suffix.
+// Fallback /usr/local/bin keeps `make install` working when praia
+// was built without -DPRAIA_LIBDIR.
+func systemBinDir() {
+  let libdir = sys.libdir
+  if (!libdir) { return "/usr/local/bin" }
+  return path.join(path.dirname(path.dirname(libdir)), "bin")
+}
+
+// Choose bindir based on whether we're running as root, matching the
+// scope decision globalGrainsDir() makes for the grain payload.
+func globalBinDir() {
+  if (sys.isRoot()) {
+    return systemBinDir()
+  }
+  return userBinDir()
+}
+
 func ensureDir(dir) {
   if (!fs.exists(dir)) {
     fs.mkdir(dir)
@@ -54,5 +81,6 @@ func ensureDir(dir) {
 
 export {
   SAND_VERSION, MANIFEST_NAME, LOCK_NAME, DEFAULT_MAIN, EXT_GRAINS_DIR,
-  home, globalGrainsDir, globalLockFile, localGrainsDir, localLockFile, ensureDir
+  home, globalGrainsDir, globalLockFile, localGrainsDir, localLockFile, ensureDir,
+  userBinDir, systemBinDir, globalBinDir
 }

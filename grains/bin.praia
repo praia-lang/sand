@@ -1,0 +1,152 @@
+use "./config"
+use "./manifest"
+use "./printer"
+
+// `bin:` wrapper management. A grain with `bin: { foo: bin/foo.praia }`
+// gets a `foo` script planted in the bindir at install time and removed
+// on `sand remove`. Wrappers are small shell scripts with absolute
+// paths baked in — same shape as the bootstrap wrapper the Makefile
+// writes for sand itself, so the two stay byte-identical.
+//
+// Reserved names: third-party grains can't claim `praia` or `sand` —
+// only sand's own bootstrap is allowed to install a `sand` wrapper.
+
+let RESERVED_NAMES = ["praia", "sand"]
+let SENTINEL = "# sand-managed wrapper for "
+let ADVICE_FLAG = ".bin-advice-shown"
+
+func isReserved(name) {
+  for (r in RESERVED_NAMES) {
+    if (r == name) { return true }
+  }
+  return false
+}
+
+// Absolute path to the praia interpreter the wrapper should exec.
+// Derived from `sys.libdir` (`<prefix>/lib/praia`) → `<prefix>/bin/praia`,
+// with `/usr/local/bin/praia` as the fallback for builds without
+// PRAIA_LIBDIR baked in. We bake the path at install time so the
+// wrapper doesn't depend on `praia` being on PATH at run time.
+func praiaPath() {
+  let libdir = sys.libdir
+  if (libdir) {
+    return path.join(path.dirname(path.dirname(libdir)), "bin", "praia")
+  }
+  return "/usr/local/bin/praia"
+}
+
+// Exact text of a sand-managed wrapper. The format MUST match the
+// Makefile's bootstrap printf byte-for-byte (a test asserts this)
+// so `sand install -g sand@<ver>` regenerates exactly what
+// `make install` wrote.
+func wrapperContent(name, praiaAbsPath, scriptAbsPath) {
+  let lines = "#!/bin/sh\n"
+  lines = lines + SENTINEL + name + "\n"
+  lines = lines + "exec \"" + praiaAbsPath + "\" \"" + scriptAbsPath + "\" \"$@\"\n"
+  return lines
+}
+
+// Treat a file at <binDir>/<name> as ours iff its second line carries
+// the sentinel. Refusing to overwrite foreign executables keeps sand
+// from clobbering a user's hand-installed CLI.
+func isSandManaged(filepath) {
+  if (!fs.exists(filepath)) { return false }
+  let content = ""
+  try { content = fs.read(filepath) } catch (e) { return false }
+  let nl = content.indexOf("\n")
+  if (nl < 0) { return false }
+  let rest = content.slice(nl + 1, len(content))
+  return rest.startsWith(SENTINEL)
+}
+
+// Install all wrappers declared in `manifestMap.bin` to `binDir`.
+// Validates each name/path again at install time (defense-in-depth —
+// the manifest was validated on read, but we don't trust state we
+// haven't checked locally). Returns the list of written paths so the
+// caller can roll back on a later failure.
+//
+// `allowReserved` lets sand's own bootstrap claim `sand`; third-party
+// grains never pass this.
+func install(grainDir, manifestMap, binDir, allowReserved = false) {
+  let written = []
+  if (!manifestMap.bin) { return written }
+  let binKeys = keys(manifestMap.bin)
+  try {
+    for (name in binKeys) {
+      if (isReserved(name) && !allowReserved) {
+        throw "Refusing to install reserved bin name '%{name}' (reserved for sand)"
+      }
+      let relPath = manifestMap.bin[name]
+      ensure (manifest.isValidBinName(name)) else {
+        throw "Invalid bin name '%{name}'"
+      }
+      ensure (manifest.isValidBinPath(relPath)) else {
+        throw "Invalid bin path for '%{name}': '%{relPath}'"
+      }
+      let scriptAbs = path.join(grainDir, relPath)
+      ensure (fs.exists(scriptAbs)) else {
+        throw "Bin entry '%{name}' points at missing file %{scriptAbs}"
+      }
+      let target = path.join(binDir, name)
+      if (fs.exists(target) && !isSandManaged(target)) {
+        throw "Refusing to overwrite %{target} (not a sand-managed wrapper)"
+      }
+      fs.atomicWrite(target, wrapperContent(name, praiaPath(), scriptAbs))
+      fs.chmod(target, 0o755)
+      written.push(target)
+    }
+  } catch (err) {
+    // All-or-nothing: if any entry fails, undo every wrapper we
+    // already wrote in this call so the caller never has to know
+    // about half-installed state.
+    for (p in written) {
+      try { fs.remove(p) } catch (e) {}
+    }
+    throw err
+  }
+  return written
+}
+
+// Best-effort unlink of every wrapper declared by `manifestMap.bin`.
+// Skips files we don't own (sentinel mismatch) so we never delete a
+// foreign script with a colliding name. Used by `sand remove` and by
+// the update path before reinstall.
+func remove(manifestMap, binDir) {
+  if (!manifestMap.bin) { return }
+  let binKeys = keys(manifestMap.bin)
+  for (name in binKeys) {
+    let target = path.join(binDir, name)
+    if (fs.exists(target) && isSandManaged(target)) {
+      try { fs.remove(target) } catch (e) {}
+    }
+  }
+}
+
+// Print a one-time notice if the bindir we just wrote to isn't on the
+// user's PATH. Stored sentinel suppresses the message on subsequent
+// installs so we don't nag.
+func pathAdvisory(binDir) {
+  // System bindir (/usr/local/bin, /usr/bin) is universally on PATH —
+  // skip the advisory.
+  if (binDir.startsWith("/usr/")) { return }
+  let pathVar = sys.env("PATH")
+  if (!pathVar) { return }
+  let entries = pathVar.split(":")
+  for (e in entries) {
+    if (e == binDir) { return }
+  }
+  let flag = path.join(config.home(), ".praia", ADVICE_FLAG)
+  if (fs.exists(flag)) { return }
+  printer.warn("%{binDir} is not on your PATH — add it to run installed CLIs:")
+  printer.info("  export PATH=\"%{binDir}:$PATH\"")
+  try {
+    config.ensureDir(path.dirname(flag))
+    fs.write(flag, "")
+  } catch (e) {}
+}
+
+export {
+  RESERVED_NAMES, SENTINEL,
+  isReserved, praiaPath, wrapperContent, isSandManaged,
+  install, remove, pathAdvisory
+}
