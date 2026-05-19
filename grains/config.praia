@@ -81,6 +81,7 @@ func ensureDir(dir) {
 
 export {
   SAND_VERSION, MANIFEST_NAME, LOCK_NAME, DEFAULT_MAIN, EXT_GRAINS_DIR,
-  home, globalGrainsDir, globalLockFile, localGrainsDir, localLockFile, ensureDir,
+  home, globalGrainsDir, systemGlobalDir, userGlobalDir, globalLockFile,
+  localGrainsDir, localLockFile, ensureDir,
   userBinDir, systemBinDir, globalBinDir
 }
