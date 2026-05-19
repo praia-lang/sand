@@ -7,6 +7,11 @@ let SAND_VERSION = _manifest.version
 let LOCK_NAME = "sand-lock.yaml"
 let DEFAULT_MAIN = "main.praia"
 let EXT_GRAINS_DIR = "ext_grains"
+// Upstream source of truth for sand itself. Used by synthSandEntry
+// (when bootstrapping the lockfile for `sand list -g`) and by the
+// update-check probe.
+let SAND_REPO = "github.com/praia-lang/sand"
+let SAND_REPO_URL = "https://github.com/praia-lang/sand.git"
 
 func home() {
   return sys.env("HOME")
@@ -80,7 +85,8 @@ func ensureDir(dir) {
 }
 
 export {
-  SAND_VERSION, MANIFEST_NAME, LOCK_NAME, DEFAULT_MAIN, EXT_GRAINS_DIR,
+  SAND_VERSION, SAND_REPO, SAND_REPO_URL,
+  MANIFEST_NAME, LOCK_NAME, DEFAULT_MAIN, EXT_GRAINS_DIR,
   home, globalGrainsDir, systemGlobalDir, userGlobalDir, globalLockFile,
   localGrainsDir, localLockFile, ensureDir,
   userBinDir, systemBinDir, globalBinDir

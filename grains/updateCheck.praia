@@ -1,0 +1,138 @@
+use "./config"
+use "./printer"
+
+// Self-update notifier. Runs at the tail of every sand invocation:
+// if a newer release tag is available upstream and the user is on an
+// older one, print a one-liner pointing at `sand update sand`. The
+// actual network probe is rate-limited via a 24-hour cache so common
+// flows (sand --version, sand list, etc.) stay fast and work offline.
+
+let CACHE_NAME = ".sand-update-cache.yaml"
+let TTL_SECONDS = 86400  // 24 hours
+let PROBE_TIMEOUT_MS = 2000
+
+func _cachePath() {
+  return path.join(config.home(), ".praia", CACHE_NAME)
+}
+
+// Strip a leading `v` and split on `.` into [major, minor, patch].
+// Returns nil for anything that doesn't look like a numeric x.y.z so
+// pre-release tags (`v0.4.0-rc1`) don't accidentally outrank a real
+// release.
+func _parseVersion(s) {
+  if (!s || type(s) != "string") { return nil }
+  let v = s
+  if (v.startsWith("v")) { v = v.slice(1, len(v)) }
+  let parts = v.split(".")
+  if (len(parts) != 3) { return nil }
+  let nums = []
+  for (p in parts) {
+    if (len(p) == 0) { return nil }
+    for (ch in p) {
+      if (ch < "0" || ch > "9") { return nil }
+    }
+    nums.push(int(p))
+  }
+  return nums
+}
+
+// Returns true iff a > b (a, b are [major, minor, patch] from _parseVersion).
+// Used to decide whether the cached upstream version warrants a notice.
+func _versionGreater(a, b) {
+  if (!a || !b) { return false }
+  for (i in 0..3) {
+    if (a[i] > b[i]) { return true }
+    if (a[i] < b[i]) { return false }
+  }
+  return false
+}
+
+// Parse `git ls-remote --tags` stdout. Lines look like
+//   <sha>\trefs/tags/v0.3.0
+//   <sha>\trefs/tags/v0.3.0^{}   (annotated-tag peeled ref — strip)
+// Return the highest x.y.z tag we can recognize, or nil.
+func _maxTag(stdout) {
+  let best = nil
+  let bestParts = nil
+  let lines = stdout.split("\n")
+  for (line in lines) {
+    let tabIdx = line.indexOf("\t")
+    if (tabIdx < 0) { continue }
+    let ref = line.slice(tabIdx + 1, len(line))
+    let prefix = "refs/tags/"
+    if (!ref.startsWith(prefix)) { continue }
+    let tag = ref.slice(len(prefix), len(ref))
+    if (tag.endsWith("^{}")) {
+      tag = tag.slice(0, len(tag) - 3)
+    }
+    let parsed = _parseVersion(tag)
+    if (!parsed) { continue }
+    if (!best || _versionGreater(parsed, bestParts)) {
+      best = tag
+      bestParts = parsed
+    }
+  }
+  return best
+}
+
+// Synchronously fetch the latest upstream tag via `git ls-remote`.
+// Bounded to PROBE_TIMEOUT_MS so users on slow/no networks don't pay.
+// Returns the tag string ("0.3.1", "v0.3.1", etc.) or nil on failure.
+func _fetchLatest() {
+  let r = sys.exec(["git", "ls-remote", "--tags", config.SAND_REPO_URL],
+                   PROBE_TIMEOUT_MS)
+  if (r.timedOut || r.exitCode != 0) { return nil }
+  return _maxTag(r.stdout)
+}
+
+func _now() {
+  let r = sys.exec(["date", "+%s"])
+  return int(r.stdout.strip())
+}
+
+func _readCache() {
+  let p = _cachePath()
+  if (!fs.exists(p)) { return nil }
+  try { return yaml.parse(fs.read(p)) } catch (e) { return nil }
+}
+
+func _writeCache(latest, ts) {
+  let p = _cachePath()
+  try {
+    config.ensureDir(path.dirname(p))
+    fs.atomicWrite(p, "checkedAt: %{ts}\nlatest: %{latest}\n")
+  } catch (e) {}
+}
+
+// Print the update-available notice if `latest` outranks the running
+// version. The recommended command shows `sand update sand` (no -g)
+// thanks to the auto-promotion in cmdUpdate for the reserved name.
+func _printNotice(latest) {
+  let cur = _parseVersion(config.SAND_VERSION)
+  let up = _parseVersion(latest)
+  if (!_versionGreater(up, cur)) { return }
+  printer.warn("sand update available: %{config.SAND_VERSION} → %{latest}")
+  printer.info("  run: sand update sand")
+}
+
+// Entry point. Reads the cache, prints the notice if applicable, then
+// re-probes upstream when the cache is missing or older than TTL so
+// the NEXT invocation has fresh data. Best-effort throughout —
+// failures (offline, missing git, parse errors) stay silent so the
+// notifier never breaks the user's actual command.
+func notifyIfAvailable() {
+  // No HOME → nowhere to cache; bail.
+  if (!config.home()) { return }
+  let cache = _readCache()
+  if (cache && cache.latest) {
+    _printNotice(cache.latest)
+  }
+  let now = _now()
+  let lastCheck = 0
+  if (cache && cache.checkedAt) { lastCheck = int(cache.checkedAt) }
+  if (now - lastCheck < TTL_SECONDS) { return }
+  let latest = _fetchLatest()
+  if (latest) { _writeCache(latest, now) }
+}
+
+export { notifyIfAvailable }

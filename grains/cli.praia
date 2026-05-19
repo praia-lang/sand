@@ -4,6 +4,7 @@ use "./bin"
 use "./git"
 use "./registry"
 use "./printer"
+use "./updateCheck"
 use "progress"
 
 func printUsage() {
@@ -84,9 +85,9 @@ func synthSandEntry() {
   try {
     let m = manifest.read(sandDir)
     return {
-      source: "github.com/praia-lang/sand",
+      source: config.SAND_REPO,
       version: m.version,
-      url: "https://github.com/praia-lang/sand.git",
+      url: config.SAND_REPO_URL,
       installed: "bundled"
     }
   } catch (e) {
@@ -572,6 +573,14 @@ func cmdInstall(args) {
 // is recorded in the lockfile.
 func cmdUpdate(args) {
   let flags = parseFlags(args)
+  // `sand update sand` (no -g) auto-promotes to global. Sand is a
+  // reserved name and can never be installed locally, so demanding
+  // the user remember `-g` for this specific operation is just
+  // friction. Other names stay explicit — only the single-arg
+  // `sand` case gets the shortcut.
+  if (!flags.global && len(flags.rest) == 1 && flags.rest[0] == "sand") {
+    flags.global = true
+  }
   let lockFile = getLockFile(flags.global)
   let targetDir = getTargetDir(flags.global)
 
@@ -919,6 +928,21 @@ func run(args) {
     print("")
     printUsage()
     sys.exit(1)
+  }
+
+  // Self-update notifier. Runs after the command completes so it
+  // tacks onto the bottom of output rather than interrupting it.
+  // Skipped for fast read-only commands (--version, help) where the
+  // user wants the bare info, and for `update sand` itself (the user
+  // is already updating sand — telling them an update is available
+  // would be noise). Wrapped in try/catch: a checker failure must
+  // never break the actual command.
+  let skipCheck = (cmd == "--version" || cmd == "-v"
+                   || cmd == "help" || cmd == "--help" || cmd == "-h"
+                   || ((cmd == "update" || cmd == "up")
+                       && len(rest) > 0 && rest.contains("sand")))
+  if (!skipCheck) {
+    try { updateCheck.notifyIfAvailable() } catch (e) {}
   }
 }
 
