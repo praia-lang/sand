@@ -130,6 +130,24 @@ func cmdInit(args) {
   let m = manifest.create(name)
   manifest.write(dir, m)
 
+  // Splice a commented `bin:` hint into the freshly written grain.yaml
+  // so users discover that CLI entry points are a thing. The section
+  // is live (`bin:` with no children) — leaving it parses as null, so
+  // libraries don't need to do anything. Filling in entries makes
+  // `sand install -g` plant wrappers on PATH. Comments themselves are
+  // lost on round-trip (sand's yaml writer is a generator, not a
+  // formatter), but the user got the hint on first read.
+  let manifestPath = path.join(dir, config.MANIFEST_NAME)
+  let hint = "# bin: declares CLI entry points planted on PATH when this\n" +
+             "# grain is installed globally (`sand install -g`). Each key is\n" +
+             "# the command name, each value a relative .praia file. Leave\n" +
+             "# empty for libraries. Example:\n" +
+             "#   bin:\n" +
+             "#     %{name}: main.praia\n" +
+             "bin:\n"
+  let yamlText = fs.read(manifestPath)
+  fs.write(manifestPath, yamlText.replace("dependencies:", hint + "dependencies:"))
+
   let mainPath = path.join(dir, config.DEFAULT_MAIN)
   if (!fs.exists(mainPath)) {
     if (isPlugin) {
