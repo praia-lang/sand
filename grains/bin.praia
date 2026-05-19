@@ -13,7 +13,6 @@ use "./printer"
 
 let RESERVED_NAMES = ["praia", "sand"]
 let SENTINEL = "# sand-managed wrapper for "
-let ADVICE_FLAG = ".bin-advice-shown"
 
 func isReserved(name) {
   for (r in RESERVED_NAMES) {
@@ -181,9 +180,12 @@ func remove(manifestMap, binDir) {
   }
 }
 
-// Print a one-time notice if the bindir we just wrote to isn't on the
-// user's PATH. Stored sentinel suppresses the message on subsequent
-// installs so we don't nag.
+// Print a PATH advisory if the bindir we just wrote to isn't on the
+// user's PATH. Fires every install — the previous once-only sentinel
+// suppressed the warning after the first install, which meant users
+// who fixed their PATH and then later broke it (new shell config,
+// different machine, etc.) got installed CLIs that silently didn't
+// work. Cheap to repeat; loud enough to act on.
 func pathAdvisory(binDir) {
   // System bindir (/usr/local/bin, /usr/bin) is universally on PATH —
   // skip the advisory.
@@ -194,14 +196,8 @@ func pathAdvisory(binDir) {
   for (e in entries) {
     if (e == binDir) { return }
   }
-  let flag = path.join(config.home(), ".praia", ADVICE_FLAG)
-  if (fs.exists(flag)) { return }
   printer.warn("%{binDir} is not on your PATH — add it to run installed CLIs:")
   printer.info("  export PATH=\"%{binDir}:$PATH\"")
-  try {
-    config.ensureDir(path.dirname(flag))
-    fs.write(flag, "")
-  } catch (e) {}
 }
 
 export {

@@ -413,6 +413,20 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
     if (isGlobal) { location = "~/.praia/ext_grains/" }
     if (!verbose) { spin.done() }
     printer.success("Installed %{name}@%{version} -> %{location}%{name}/")
+    // Surface every CLI wrapper we just planted so the user can see
+    // which commands are now on PATH. Display paths under $HOME with
+    // a `~` prefix to match the grain-location line above; absolute
+    // paths (root installs to /usr/local/bin) print verbatim.
+    if (len(binWrappers) > 0) {
+      let homePrefix = config.home() + "/"
+      for (w in binWrappers) {
+        let display = w
+        if (w.startsWith(homePrefix)) {
+          display = "~/" + w.slice(len(homePrefix), len(w))
+        }
+        printer.success("Installed %{name}@%{version} -> %{display}")
+      }
+    }
 
     // Mark this grain as in-flight for cycle detection in recursive deps.
     visited[name] = true
