@@ -555,6 +555,13 @@ func cmdUpdate(args) {
   func updateOne(name, info) {
     printer.info("Updating %{name}...")
     let grainDir = path.join(targetDir, name)
+    // Snapshot of sand-managed wrappers before we unlink them — used
+    // to restore on installGrain failure for sand specifically, so a
+    // botched self-update doesn't leave the user without a `sand`
+    // command on PATH. nil for non-sand grains (losing wrappers on a
+    // failed update of a user grain is acceptable; the grain dir was
+    // already removed). Map shape: {wrapperPath: {content, mode}}.
+    let savedSandWrappers = nil
     // Read the OLD manifest before removing the grain dir so any
     // bin: entries that the new version renamed or dropped get
     // unlinked. installGrain will write the new bin: set during
@@ -563,6 +570,28 @@ func cmdUpdate(args) {
       try {
         let oldManifest = manifest.read(grainDir)
         if (oldManifest.bin) {
+          if (name == "sand") {
+            // Capture content + mode of each sand-managed wrapper
+            // before bin.remove tears it down, so the catch below
+            // can put them back if installGrain fails. The atomic
+            // swap restoring grainDir without restoring wrappers
+            // would leave the user able to run sand via `praia
+            // <path>/main.praia` but not via the `sand` command.
+            savedSandWrappers = {}
+            let oldBinDir = config.globalBinDir()
+            let oldBinKeys = keys(oldManifest.bin)
+            for (oldBinName in oldBinKeys) {
+              let oldPath = path.join(oldBinDir, oldBinName)
+              if (fs.exists(oldPath) && bin.isSandManaged(oldPath)) {
+                try {
+                  savedSandWrappers[oldPath] = {
+                    content: fs.read(oldPath),
+                    mode: fs.stat(oldPath).mode
+                  }
+                } catch (e) {}
+              }
+            }
+          }
           bin.remove(oldManifest, config.globalBinDir())
         }
       } catch (e) {
@@ -583,6 +612,19 @@ func cmdUpdate(args) {
     try {
       installGrain(spec, flags.global, flags.verbose, false, {}, nil, flags.ignoreMissing)
     } catch (e) {
+      // Restore the saved sand wrapper(s) before propagating the
+      // failure, so the user keeps a working `sand` on PATH paired
+      // with the just-restored grain dir.
+      if (savedSandWrappers != nil) {
+        let wkeys = keys(savedSandWrappers)
+        for (wpath in wkeys) {
+          let b = savedSandWrappers[wpath]
+          try {
+            fs.atomicWrite(wpath, b.content)
+            fs.chmod(wpath, b.mode)
+          } catch (e2) {}
+        }
+      }
       printer.error("Update failed: %{e}")
       sys.exit(1)
     }
