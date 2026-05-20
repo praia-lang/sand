@@ -370,6 +370,34 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
       }
     }
 
+    // Reserved-name gate.
+    //
+    // The grain *name* "sand" controls the install directory under
+    // `<libdir>/ext_grains/sand/` and — when isGlobal — the wrapper
+    // at `<bindir>/sand`. A third-party repo whose manifest declares
+    // `name: sand` would otherwise overwrite the user's actual sand:
+    // running that bin wrapper, every subsequent `sand foo`
+    // invocation runs the attacker's code.
+    //
+    // Allowed sources for the reserved name:
+    //   • config.SAND_REPO_URL — the canonical praia-lang/sand. Matches
+    //     specs like `github.com/praia-lang/sand`, `praia-lang/sand`,
+    //     and the literal https URL, all normalized by parseSpec.
+    //   • file:// URLs — local mirrors and the dev/test path. A
+    //     user with file:// access already has local code execution,
+    //     so this isn't a meaningful weakening of the guarantee. It
+    //     keeps `sand update sand` testable without a github fetch.
+    //
+    // Everything else (any other https/http URL) gets rejected here,
+    // *before* the staging directory is created. A user who needs to
+    // install a fork has to either land their changes upstream or
+    // install the fork under a different name.
+    if (name == "sand" && parsed.url != config.SAND_REPO_URL &&
+        !parsed.url.startsWith("file://")) {
+      spin.done()
+      throw "Refusing to install '%{spec}' as sand: the reserved 'sand' name may only be claimed by the canonical upstream at %{config.SAND_REPO_URL} or a local file:// mirror (got %{parsed.url})"
+    }
+
     // Verify entry file exists
     let srcEntry = path.join(cloneDir, mainFile)
     ensure (fs.exists(srcEntry)) else {
