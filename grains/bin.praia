@@ -196,8 +196,9 @@ func pathAdvisory(binDir) {
   for (e in entries) {
     if (e == binDir) { return }
   }
-  printer.warn("%{binDir} is not on your PATH — add it to run installed CLIs:")
-  printer.info("  export PATH=\"%{binDir}:$PATH\"")
+  print("")
+  printer.warn("%{binDir} is not on your PATH, add it to run installed CLIs:")
+  printer.info("export PATH=\"%{binDir}:$PATH\"")
 }
 
 export {
