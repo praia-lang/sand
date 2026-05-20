@@ -20,6 +20,7 @@ func printUsage() {
   print("  sand lock                  Sync sand-lock.yaml with grain.yaml (install missing deps)")
   print("  sand remove <name>         Remove a locally installed grain")
   print("  sand remove --global <name>  Remove a globally installed grain")
+  print("                               (prompts to cascade-remove dependents; use -y to skip)")
   print("  sand list                  List locally installed grains")
   print("  sand list --global         List globally installed grains")
   print("  sand info <name>           Show info about an installed grain")
@@ -42,6 +43,7 @@ func parseFlags(args) {
   let isGlobal = false
   let isVerbose = false
   let ignoreMissing = false
+  let yes = false
   let rest = []
   for (arg in args) {
     if (arg == "--global" || arg == "-g") {
@@ -50,11 +52,14 @@ func parseFlags(args) {
       isVerbose = true
     } elif (arg == "--ignore-missing-deps") {
       ignoreMissing = true
+    } elif (arg == "--yes" || arg == "-y") {
+      yes = true
     } else {
       push(rest, arg)
     }
   }
-  return { global: isGlobal, verbose: isVerbose, ignoreMissing: ignoreMissing, rest: rest }
+  return { global: isGlobal, verbose: isVerbose, ignoreMissing: ignoreMissing,
+           yes: yes, rest: rest }
 }
 
 func getTargetDir(isGlobal) {
@@ -765,11 +770,109 @@ func cmdLock(args) {
   }
 }
 
+// Find every grain in the given scope that lists `name` in its
+// `dependencies` map — directly or transitively. Returns the names
+// in reverse-dep order (closest dependents first). Best-effort: a
+// grain whose manifest fails to read is silently skipped (we can't
+// tell whether it depends on `name`, but blocking removal on an
+// unrelated corruption is worse than the leak).
+func findTransitiveDependents(targetDir, lockFile, name) {
+  let lock = registry.load(lockFile)
+  let grainNames = keys(lock.grains)
+
+  // Forward dep map: <grainName> → [its direct deps]. Built once
+  // so the BFS below is O(grains * spreads-per-grain) rather than
+  // re-reading manifests on each round.
+  let forwardDeps = {}
+  for (g in grainNames) {
+    let gdir = path.join(targetDir, g)
+    if (!fs.exists(path.join(gdir, config.MANIFEST_NAME))) {
+      forwardDeps[g] = []
+      continue
+    }
+    try {
+      let m = manifest.read(gdir)
+      if (m.dependencies) {
+        forwardDeps[g] = keys(m.dependencies)
+      } else {
+        forwardDeps[g] = []
+      }
+    } catch (e) {
+      forwardDeps[g] = []
+    }
+  }
+
+  let dependents = []
+  let seen = {}
+  let frontier = [name]
+  while (len(frontier) > 0) {
+    let next = []
+    for (target in frontier) {
+      for (g in grainNames) {
+        if (g == name || seen.has(g)) { continue }
+        let gDeps = forwardDeps[g]
+        for (d in gDeps) {
+          if (d == target) {
+            dependents.push(g)
+            seen[g] = true
+            next.push(g)
+            break
+          }
+        }
+      }
+    }
+    frontier = next
+  }
+  return dependents
+}
+
+// Per-grain removal — extracted from cmdRemove so cascade-on-remove
+// can call it once per affected grain. Does NOT prompt or check
+// dependents; the orchestrating cmdRemove already validated.
+func removeOneGrain(name, flags) {
+  let targetDir = getTargetDir(flags.global)
+  let lockFile = getLockFile(flags.global)
+
+  // Unlink any bin: wrappers BEFORE removing the grain dir, so a
+  // failure midway leaves the grain dir intact (recoverable) rather
+  // than leaving wrappers pointing at a deleted grain.
+  let grainDir = path.join(targetDir, name)
+  if (flags.global && fs.exists(grainDir)) {
+    try {
+      let m = manifest.read(grainDir)
+      if (m.bin) {
+        bin.remove(m, config.globalBinDir())
+      }
+    } catch (e) {
+      printer.warn("Could not read manifest to clean up bin wrappers: %{e}")
+    }
+  }
+
+  if (fs.exists(grainDir)) {
+    fs.remove(grainDir)
+  }
+  let grainFile = path.join(targetDir, "%{name}.praia")
+  if (fs.exists(grainFile)) {
+    fs.remove(grainFile)
+  }
+
+  registry.remove(lockFile, name)
+  printer.success("Removed %{name}")
+
+  if (!flags.global) {
+    let cwd = sys.cwd()
+    if (fs.exists(path.join(cwd, config.MANIFEST_NAME))) {
+      manifest.removeDep(cwd, name)
+      printer.info("Removed %{name} from grain.yaml dependencies")
+    }
+  }
+}
+
 func cmdRemove(args) {
   let flags = parseFlags(args)
 
   ensure (len(flags.rest) > 0) else {
-    printer.error("Usage: sand remove [--global] <name>")
+    printer.error("Usage: sand remove [--global] [--yes] <name>")
     sys.exit(1)
   }
 
@@ -787,47 +890,41 @@ func cmdRemove(args) {
     sys.exit(1)
   }
 
-  // Unlink any bin: wrappers BEFORE removing the grain dir, so a
-  // failure midway leaves the grain dir intact (recoverable) rather
-  // than leaving wrappers pointing at a deleted grain (broken CLI).
-  // We re-read the grain's manifest because the lockfile entry
-  // doesn't record bin: today.
-  let grainDir = path.join(targetDir, name)
-  if (flags.global && fs.exists(grainDir)) {
-    try {
-      let m = manifest.read(grainDir)
-      if (m.bin) {
-        bin.remove(m, config.globalBinDir())
+  // Cascade-on-remove: if any installed grain (in the same scope)
+  // depends on `name`, removing `name` alone would leave them with
+  // a broken `use` import. Warn, prompt for confirmation, then
+  // remove every dependent first.
+  //
+  // The --yes flag (or piped non-interactive stdin returning nil)
+  // controls the prompt: --yes skips it, non-interactive sessions
+  // fail safe by treating EOF as "no".
+  let dependents = findTransitiveDependents(targetDir, lockFile, name)
+  if (len(dependents) > 0) {
+    printer.warn("Removing %{name} will also remove these dependents: %{dependents.join(", ")}")
+    if (!flags.yes) {
+      sys.stdout("continue? (y/N) ")
+      let ans = sys.input(nil)
+      if (!ans) {
+        printer.info("Aborted (no input)")
+        return
       }
-    } catch (e) {
-      // Missing or broken manifest — don't block removal. We may
-      // leak a wrapper but the grain still gets cleaned up.
-      printer.warn("Could not read manifest to clean up bin wrappers: %{e}")
+      let lower = ans.lower().strip()
+      if (lower != "y" && lower != "yes") {
+        printer.info("Aborted")
+        return
+      }
+    }
+    // Remove dependents in dependency order (deepest first). Each
+    // removal cleans up its own bin wrappers + lockfile entry +
+    // grain.yaml dep (if local). If one fails partway through, we
+    // stop — already-removed dependents stay removed but the user
+    // can re-run after fixing the cause.
+    for (dep in dependents) {
+      removeOneGrain(dep, flags)
     }
   }
 
-  // Remove the grain directory
-  if (fs.exists(grainDir)) {
-    fs.remove(grainDir)
-  }
-
-  // Also remove single-file grain if it exists
-  let grainFile = path.join(targetDir, "%{name}.praia")
-  if (fs.exists(grainFile)) {
-    fs.remove(grainFile)
-  }
-
-  registry.remove(lockFile, name)
-  printer.success("Removed %{name}")
-
-  // Also remove from current project's grain.yaml if present and local
-  if (!flags.global) {
-    let cwd = sys.cwd()
-    if (fs.exists(path.join(cwd, config.MANIFEST_NAME))) {
-      manifest.removeDep(cwd, name)
-      printer.info("Removed %{name} from grain.yaml dependencies")
-    }
-  }
+  removeOneGrain(name, flags)
 }
 
 func cmdList(args) {
