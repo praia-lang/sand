@@ -518,8 +518,17 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
     if (!installedDate) {
       installedDate = sys.exec(["date", "+%Y-%m-%d"]).stdout.strip()
     }
+    // Strip any `@<version>` suffix from the user-typed spec before
+    // saving it as `source`. Without this, restore concatenates the
+    // version pin on top of a source that already has it embedded
+    // (e.g. `file://repo@v1@v1`), which parseSpec then mis-derives a
+    // name from and rejects.
+    let sourceForLock = spec
+    if (parsed.version && spec.endsWith("@" + parsed.version)) {
+      sourceForLock = spec.slice(0, len(spec) - len(parsed.version) - 1)
+    }
     registry.add(lockFile, name, {
-      source: spec,
+      source: sourceForLock,
       version: version,
       url: parsed.url,
       commit: resolvedCommit,
@@ -697,7 +706,12 @@ func installFromLockFile(isGlobal, verbose = false, ignoreMissing = false) {
       // restores the prior entry so the user still has the
       // information they need to retry.
       let spec = str(info.source)
-      if (info.version && info.version != "latest") {
+      // Old lockfiles (pre-fix) sometimes saved `source` with the
+      // `@<version>` suffix already baked in. Guard the append so we
+      // don't double-pin on restore — that produces specs like
+      // `file://repo@v1@v1` which fail to parse.
+      if (info.version && info.version != "latest" &&
+          !spec.endsWith("@" + info.version)) {
         spec = spec + "@" + info.version
       }
       // SHA pin + integrity hash from the lockfile drive a reproducible
