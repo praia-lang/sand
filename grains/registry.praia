@@ -16,8 +16,30 @@ func load(lockPath) {
   if (!data) {
     throw "Lockfile %{lockPath} is not valid YAML; refusing to silently start with an empty registry. Inspect and repair (or delete) the file."
   }
+  // Structural validation. Yaml.parse is permissive enough that
+  // `42`, `- a` (a sequence), or `grains: nope` (scalar at the
+  // grains key) all parse successfully — but every caller of
+  // load() expects `data.grains` to be a map of name → entry-map.
+  // Catch the shape mismatch here so the error names the file and
+  // the field rather than surfacing later as "string has no
+  // property 'source'" or "cannot iterate over number".
+  if (type(data) != "map") {
+    throw "Lockfile %{lockPath} top-level must be a YAML mapping (got %{type(data)})"
+  }
   if (!data.grains) {
     data.grains = {}
+  } elif (type(data.grains) != "map") {
+    throw "Lockfile %{lockPath} 'grains:' must be a YAML mapping (got %{type(data.grains)})"
+  }
+  // Each entry must itself be a map — otherwise downstream code
+  // that reads `info.source`, `info.version`, etc. would blow up
+  // with cryptic property-access errors. Loop here for the same
+  // file-and-field-naming reason as above.
+  let grainKeys = keys(data.grains)
+  for (k in grainKeys) {
+    if (type(data.grains[k]) != "map") {
+      throw "Lockfile %{lockPath} entry '%{k}' must be a YAML mapping (got %{type(data.grains[k])})"
+    }
   }
   return data
 }
