@@ -47,8 +47,17 @@ func read(dir) {
     throw "No grain.yaml found in %{dir}"
   }
   let content = fs.read(filepath)
+  // Truly empty manifests round-trip as nil — that's a degenerate
+  // grain.yaml but not a parse failure. A non-empty document that
+  // parses to nil, on the other hand, is malformed: callers that
+  // looked at `grainManifest.main` or `grainManifest.bin` would
+  // silently treat the grain as if those fields were absent. Loud
+  // error here matches the policy in registry.load.
+  if (len(content.strip()) == 0) { return nil }
   let m = yaml.parse(content)
-  if (!m) { return m }
+  if (!m) {
+    throw "Manifest %{filepath} is not valid YAML"
+  }
   // Validate untrusted manifest fields at the source so all callers are safe.
   if (has(m, "name") && m.name) {
     ensure (isValidName(m.name)) else {
@@ -81,28 +90,34 @@ func read(dir) {
 }
 
 func write(dir, m) {
+  // Field order is fixed (not whatever the underlying hash map
+  // iterates as) so a write/read/write cycle produces stable output
+  // and the init-time hint splice that anchors on "dependencies:"
+  // keeps working. Each value goes through yaml.stringify so a
+  // description like `A test: with a colon and #hash` can't break
+  // out of its scalar context and corrupt the file.
   let filepath = path.join(dir, config.MANIFEST_NAME)
   let lines = ""
-  lines = lines + "name: %{m.name}\n"
-  lines = lines + "version: %{m.version}\n"
+  lines = lines + "name: %{yaml.stringify(m.name)}\n"
+  lines = lines + "version: %{yaml.stringify(m.version)}\n"
   if (has(m, "description")) {
-    lines = lines + "description: %{m.description}\n"
+    lines = lines + "description: %{yaml.stringify(m.description)}\n"
   }
   if (has(m, "author")) {
-    lines = lines + "author: %{m.author}\n"
+    lines = lines + "author: %{yaml.stringify(m.author)}\n"
   }
   if (has(m, "license") && m.license) {
-    lines = lines + "license: %{m.license}\n"
+    lines = lines + "license: %{yaml.stringify(m.license)}\n"
   }
   if (has(m, "main") && m.main) {
-    lines = lines + "main: %{m.main}\n"
+    lines = lines + "main: %{yaml.stringify(m.main)}\n"
   }
   if (has(m, "bin") && m.bin) {
     let binKeys = keys(m.bin)
     if (len(binKeys) > 0) {
       lines = lines + "bin:\n"
       for (k in binKeys) {
-        lines = lines + "  %{k}: %{m.bin[k]}\n"
+        lines = lines + "  %{yaml.stringify(k)}: %{yaml.stringify(m.bin[k])}\n"
       }
     }
   }
@@ -111,7 +126,7 @@ func write(dir, m) {
     let depKeys = keys(m.dependencies)
     if (len(depKeys) > 0) {
       for (k in depKeys) {
-        lines = lines + "  %{k}: %{m.dependencies[k]}\n"
+        lines = lines + "  %{yaml.stringify(k)}: %{yaml.stringify(m.dependencies[k])}\n"
       }
     }
   }

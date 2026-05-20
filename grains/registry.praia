@@ -7,8 +7,14 @@ func load(lockPath) {
     return { grains: {} }
   }
   let data = yaml.parse(content)
+  // A non-empty file that parses to nothing means the lockfile is
+  // corrupted. Refuse loudly instead of silently returning an empty
+  // map — quietly forgetting every previously-installed grain would
+  // make a subsequent `sand install` reinstall the world (worst
+  // case: replacing pinned commits with branch tips) without the
+  // user ever seeing the original lockfile drift.
   if (!data) {
-    return { grains: {} }
+    throw "Lockfile %{lockPath} is not valid YAML; refusing to silently start with an empty registry. Inspect and repair (or delete) the file."
   }
   if (!data.grains) {
     data.grains = {}
@@ -17,27 +23,31 @@ func load(lockPath) {
 }
 
 func save(lockPath, lock) {
+  // Each value is routed through yaml.stringify so a string with a
+  // `:`, `#`, or newline can't break out of its scalar context and
+  // produce malformed YAML — what the unquoted interpolation that
+  // used to live here was doing on edge-case inputs.
   let lines = "grains:\n"
   let grainKeys = keys(lock.grains)
   for (name in grainKeys) {
     let info = lock.grains[name]
-    lines = lines + "  %{name}:\n"
-    lines = lines + "    source: %{info.source}\n"
-    lines = lines + "    version: %{info.version}\n"
-    lines = lines + "    url: %{info.url}\n"
+    lines = lines + "  %{yaml.stringify(name)}:\n"
+    lines = lines + "    source: %{yaml.stringify(info.source)}\n"
+    lines = lines + "    version: %{yaml.stringify(info.version)}\n"
+    lines = lines + "    url: %{yaml.stringify(info.url)}\n"
     // `commit` is the load-bearing reproducibility pin: a moving tag
     // or branch tip in `version` is informational, but the SHA is what
     // we re-check out on restore. `integrity` is the matching content
     // hash, verified after each restore so a tampered or partial
     // re-fetch can't masquerade as the pinned commit.
     if (info.commit) {
-      lines = lines + "    commit: %{info.commit}\n"
+      lines = lines + "    commit: %{yaml.stringify(info.commit)}\n"
     }
     if (info.integrity) {
-      lines = lines + "    integrity: %{info.integrity}\n"
+      lines = lines + "    integrity: %{yaml.stringify(info.integrity)}\n"
     }
     if (info.installed) {
-      lines = lines + "    installed: %{info.installed}\n"
+      lines = lines + "    installed: %{yaml.stringify(info.installed)}\n"
     }
   }
   fs.write(lockPath, lines)
