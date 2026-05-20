@@ -154,6 +154,53 @@ func checkout(dir, tag, verbose = false) {
   throw "Version '%{tag}' not found (tried tag '%{tag}', 'v%{tag}')"
 }
 
+// Resolve a remote ref to its SHA *without* cloning. Used by
+// `sand update` to short-circuit when the recorded commit already
+// matches what the remote serves — saves a full clone+swap when
+// nothing has actually changed.
+//
+// `version` semantics mirror parseSpec:
+//   • nil or "latest" → probe HEAD.
+//   • a tag-like token → probe `refs/tags/<v>` first, then
+//     `refs/tags/v<v>` (to match the bare-vs-v-prefix dance that
+//     checkout() already does), then `refs/heads/<v>`.
+//
+// Returns the resolved 40-char SHA on first match, or nil when no
+// candidate ref exists on the remote. Throws only on transport
+// failure (no network, repo gone) — caller decides whether to
+// degrade gracefully or surface the error.
+func lsRemote(url, version) {
+  if (!isValidUrl(url)) { throw "Invalid remote URL for ls-remote" }
+  let refs = []
+  if (!version || version == "latest") {
+    push(refs, "HEAD")
+  } else {
+    push(refs, "refs/tags/" + version)
+    push(refs, "refs/tags/v" + version)
+    push(refs, "refs/heads/" + version)
+  }
+  let lastErr = nil
+  for (ref in refs) {
+    if (!isValidRef(ref)) { continue }
+    let r = sys.exec(["git", "ls-remote", "--quiet", "--exit-code", "--", url, ref])
+    if (r.exitCode == 0) {
+      // Output is "<sha>\t<ref>\n..." — take the first line's SHA.
+      let line = r.stdout.split("\n")[0]
+      let parts = line.split("\t")
+      if (len(parts) >= 1 && len(parts[0]) == 40 && parts[0].test("^[a-f0-9]+$")) {
+        return parts[0]
+      }
+    } elif (r.exitCode != 2) {
+      // exit 2 = ref not found (try the next candidate). Anything
+      // else is a real transport error worth surfacing.
+      lastErr = r.stderr.strip()
+      if (len(lastErr) == 0) { lastErr = r.stdout.strip() }
+    }
+  }
+  if (lastErr) { throw "git ls-remote failed: %{lastErr}" }
+  return nil
+}
+
 // Resolve a ref (or HEAD) to its full commit SHA. Used by the installer
 // to pin the lockfile to a concrete commit even when the user requested
 // a moving target like a branch tip or "latest".
@@ -175,4 +222,4 @@ func revParse(dir, ref = "HEAD") {
   return sha
 }
 
-export { parseSpec, clone, checkout, revParse, isValidUrl, isValidRef }
+export { parseSpec, clone, checkout, revParse, lsRemote, isValidUrl, isValidRef }

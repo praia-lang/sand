@@ -783,9 +783,33 @@ func cmdUpdate(args) {
   // would skip past that synthesize logic.
 
   // Helper: re-fetch a single grain by name. Assumes the entry exists.
+  // Returns true if it actually re-installed, false if the probe
+  // showed there was nothing to do (so the caller can adjust the
+  // batch summary).
   func updateOne(name, info) {
     printer.info("Updating %{name}...")
     let grainDir = path.join(targetDir, name)
+
+    // Probe the remote for the current SHA at the locked ref. If
+    // it matches `info.commit`, the install on disk is already at
+    // the latest revision — skip the clone+swap. We only do this
+    // when the lockfile recorded a commit (older lockfiles fall
+    // through to the full update path; their next install will
+    // populate `commit:` for future probes).
+    if (info.commit && info.url) {
+      let remoteSha = nil
+      try {
+        remoteSha = git.lsRemote(info.url, info.version)
+      } catch (e) {
+        // Transport failure — fall through to the normal update,
+        // which will fail loudly at the clone step with the same
+        // diagnostic. Don't double-report here.
+      }
+      if (remoteSha && remoteSha == info.commit && fs.exists(grainDir)) {
+        printer.info("  already at %{info.commit.slice(0, 8)} — up to date")
+        return false
+      }
+    }
 
     // Snapshot the OLD bin: list before installGrain runs. We don't
     // touch the wrappers yet — installGrain plants the new ones via
@@ -852,6 +876,7 @@ func cmdUpdate(args) {
         }
       }
     }
+    return true
   }
 
   if (len(flags.rest) == 0) {
@@ -863,15 +888,18 @@ func cmdUpdate(args) {
       return
     }
     let updated = 0
+    let checked = 0
     for (name in grainKeys) {
       let info = lock.grains[name]
       if (info.version == "latest") {
-        updateOne(name, info)
-        updated = updated + 1
+        checked = checked + 1
+        if (updateOne(name, info)) { updated = updated + 1 }
       }
     }
-    if (updated == 0) {
+    if (checked == 0) {
       printer.info("No grains pinned to 'latest' to update")
+    } elif (updated == 0) {
+      printer.success("All grains already up to date")
     } else {
       printer.success("Updated %{updated} grain(s)")
     }
