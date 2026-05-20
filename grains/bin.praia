@@ -96,6 +96,17 @@ func isSandManaged(filepath) {
 //
 // `allowReserved` lets sand's own bootstrap claim `sand`; third-party
 // grains never pass this.
+// Returns a transaction-like record:
+//   { written: [absolute paths planted/overwritten], restorable: [...] }
+//
+// `restorable` carries the per-target backups for files we OVERWROTE
+// (i.e. existing sand-managed wrappers from a prior install). The
+// caller can use it to roll back wrappers if a *later* step fails —
+// bin.install's internal try/catch only covers failures inside its
+// own loop. Shape per entry: {target, content, mode}.
+//
+// Callers that don't care about post-success rollback can use just
+// `.written` and ignore `.restorable`.
 func install(grainDir, manifestMap, binDir, allowReserved = false) {
   let written = []
   // Per-target backup. Entry shape: {target, existed, content, mode}.
@@ -104,7 +115,7 @@ func install(grainDir, manifestMap, binDir, allowReserved = false) {
   // previous install" (rollback should restore its original bytes + mode
   // so the user keeps the working CLI they had before).
   let backups = []
-  if (!manifestMap.bin) { return written }
+  if (!manifestMap.bin) { return { written: written, restorable: [] } }
   let binKeys = keys(manifestMap.bin)
   try {
     for (name in binKeys) {
@@ -162,7 +173,17 @@ func install(grainDir, manifestMap, binDir, allowReserved = false) {
     }
     throw err
   }
-  return written
+  // On success, surface the overwrite backups so a later failure in
+  // the caller can roll wrappers back to their pre-install bytes.
+  // Entries where `existed=false` are skipped — for those the caller
+  // just unlinks the path from `written` (no prior bytes to restore).
+  let restorable = []
+  for (b in backups) {
+    if (b.existed && b.content != nil) {
+      push(restorable, { target: b.target, content: b.content, mode: b.mode })
+    }
+  }
+  return { written: written, restorable: restorable }
 }
 
 // Best-effort unlink of every wrapper declared by `manifestMap.bin`.

@@ -307,9 +307,14 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
   // `binWrappers` holds absolute paths of any `bin:` entries we planted
   // in the bindir; the catch unlinks them so a half-finished install
   // doesn't leave a working CLI pointing at a deleted grain.
+  // `binRestorable` holds the per-target byte+mode backup of any
+  // sand-managed wrapper we OVERWROTE — needed so a post-swap failure
+  // (e.g. transitive dep install) can restore the user's prior CLI
+  // alongside the destDir restore from bakDir.
   let destDir = ""
   let destDirTouched = false
   let binWrappers = []
+  let binRestorable = []
 
   try {
     if (verbose) { printer.info("Cloning %{parsed.url} -> %{cloneDir}") }
@@ -492,14 +497,18 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
       // github.com/forker/sand can't sneak in unless its own
       // grain.yaml claims the name.
       let allowReserved = (name == "sand")
-      binWrappers = bin.install(destDir, grainManifest, binDir, allowReserved)
+      let binResult = bin.install(destDir, grainManifest, binDir, allowReserved)
+      binWrappers = binResult.written
+      binRestorable = binResult.restorable
       bin.pathAdvisory(binDir)
     }
 
-    // The old install's content has been replaced — drop the
-    // backup. (Kept above by intent: if planting wrappers had
-    // failed, the catch below would restore from bak.)
-    if (fs.exists(bakDir)) { try { fs.remove(bakDir) } catch (e) {} }
+    // Keep bakDir alive past this point. We deliberately do NOT
+    // remove it yet — the lockfile write and the transitive deps
+    // loop below can still throw. If they do, the outer catch needs
+    // bakDir to restore the prior install. The cleanup happens at
+    // the end of this try block (after the deps loop) so the
+    // success path drops the backup once everything's committed.
 
     // Register in lock file
     if (!verbose) { spin.tick("Updating lock file...") }
@@ -566,14 +575,33 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
         }
       }
     }
+
+    // Everything past the swap completed: wrappers planted, lockfile
+    // updated, transitive deps installed. NOW we can drop the
+    // pre-swap backup. Doing it any earlier (e.g. right after
+    // wrappers) would mean a failure in the lockfile write or deps
+    // loop has no rollback target — exactly the bug this comment
+    // exists to prevent.
+    if (fs.exists(bakDir)) { try { fs.remove(bakDir) } catch (e) {} }
   } catch (err) {
     if (!verbose) { spin.done() }
     // Bin wrappers we planted in this run go away first so a working
-    // wrapper never outlives the grain dir it points at. (bin.install
-    // restored any sand-managed wrappers it overwrote within its own
-    // try/catch; we only have to clean up wrappers we *created*.)
+    // wrapper never outlives the grain dir it points at. bin.install
+    // already restored wrappers if IT threw — but if it returned
+    // successfully and a *later* step (lockfile write, transitive
+    // dep install) threw, the new wrappers are still in place and
+    // the original wrapper bytes are tracked in `binRestorable`.
+    // We unlink the new ones, then put the old ones back, so the
+    // restored destDir + restored wrappers describe the same prior
+    // install.
     for (w in binWrappers) {
       try { fs.remove(w) } catch (e) {}
+    }
+    for (r in binRestorable) {
+      try {
+        fs.atomicWrite(r.target, r.content)
+        fs.chmod(r.target, r.mode)
+      } catch (e) {}
     }
     // Roll the dir back to the prior install if we swapped. If we
     // never got to the swap, destDirTouched is false and the old
