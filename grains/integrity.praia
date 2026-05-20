@@ -48,7 +48,12 @@ func _walk(dir, prefix) {
   let out = []
   for (name in names) {
     let full = path.join(dir, name)
-    let st = fs.stat(full)
+    // fs.lstat — *not* fs.stat — so a symlink reports its own type
+    // (`symlink`) rather than the type of whatever it points at.
+    // fs.stat follows symlinks transparently and would have let a
+    // link-to-a-regular-file slip through as type="file", hashing
+    // out-of-tree content into the integrity sum.
+    let st = fs.lstat(full)
     let rel = prefix + name
     if (st.type == "dir") {
       let sub = _walk(full, rel + "/")
