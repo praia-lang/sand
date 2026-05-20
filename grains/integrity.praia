@@ -1,0 +1,112 @@
+// Subresource-integrity-style content hash over an installed grain
+// directory. The value committed to sand-lock.yaml is `sha256-<hex>`;
+// on restore we recompute and compare so a tampered cache or a corrupt
+// fetch can't silently install something other than what was locked.
+//
+// What goes into the hash:
+//   • Every regular file under `dir`, recursively. Symlinks, sockets,
+//     fifos, and the like are rejected — grains are source trees, not
+//     filesystems. Empty files participate (zero-length content still
+//     hashes deterministically).
+//   • Each entry contributes the slash-joined relative path, a NUL,
+//     the file's sha256 (hex), and a newline — in path-sorted order.
+//   • Directories don't contribute on their own; their identity is
+//     implicit in the relative paths of the files they contain. Empty
+//     directories are therefore invisible to the hash. Real grains
+//     don't ship empty directories, so the simplification is free.
+//   • File mode, mtime, ownership, xattrs, etc. are deliberately
+//     ignored — content is the only thing that affects grain
+//     semantics, and stat fields drift on copy/clone.
+
+func _isSafeName(name) {
+  // Defense against a hostile filesystem returning crafted entries.
+  // We never want ".." or absolute components leaking into the
+  // canonical manifest text we feed into sha256 below — and we
+  // reject embedded NUL because that's the byte we use to delimit
+  // path from sha in the canonical manifest. A filename with an
+  // inline NUL could otherwise be crafted to collide with a
+  // different (path, sha) pair on disk, producing two trees with
+  // identical integrity hashes.
+  if (name == "." || name == "..") { return false }
+  if (name.contains("/")) { return false }
+  if (name.contains("\x00")) { return false }
+  return true
+}
+
+// Sorted, recursive walk producing [{path, sha}, ...]. `prefix` is the
+// slash-terminated relative path under the grain root; the top-level
+// call passes "". Recursion order is stable because we sort filenames
+// at each directory level — that's what makes the final hash
+// reproducible across filesystems with different natural orders.
+func _walk(dir, prefix) {
+  let entries = fs.readDir(dir)
+  // Sort the entries lexicographically so two filesystems with
+  // different iteration orders produce the same manifest.
+  let names = []
+  for (n in entries) {
+    if (!_isSafeName(n)) {
+      throw "integrity.compute: unsafe entry name from fs.readDir: '%{n}'"
+    }
+    push(names, n)
+  }
+  names = sort(names)
+
+  let out = []
+  for (name in names) {
+    let full = path.join(dir, name)
+    // fs.lstat — *not* fs.stat — so a symlink reports its own type
+    // (`symlink`) rather than the type of whatever it points at.
+    // fs.stat follows symlinks transparently and would have let a
+    // link-to-a-regular-file slip through as type="file", hashing
+    // out-of-tree content into the integrity sum.
+    let st = fs.lstat(full)
+    let rel = prefix + name
+    if (st.type == "dir") {
+      let sub = _walk(full, rel + "/")
+      for (e in sub) { push(out, e) }
+    } elif (st.type == "file") {
+      let content = fs.read(full)
+      push(out, { path: rel, sha: crypto.sha256(content) })
+    } else {
+      // Symlinks/sockets/fifos shouldn't appear in a grain checkout.
+      // Be loud about it rather than silently dropping them — silent
+      // drop would mean two installs with different symlink contents
+      // could share an integrity hash.
+      throw "integrity.compute: unsupported entry type '%{st.type}' at '%{rel}'"
+    }
+  }
+  return out
+}
+
+// Compute the canonical integrity string for `dir`. Returns
+// "sha256-<hex>" — prefixed so future hash families (sha512, blake3)
+// can land without ambiguity in the lockfile.
+func compute(dir) {
+  if (!fs.exists(dir)) {
+    throw "integrity.compute: directory does not exist: %{dir}"
+  }
+  let entries = _walk(dir, "")
+  // Canonical text: "<path>\x00<sha>\n" per entry. NUL separates fields
+  // because no legal grain path contains it, and the trailing newline
+  // lets a future reader recover entries with a simple split.
+  let canonical = ""
+  for (e in entries) {
+    canonical = canonical + e.path + "\x00" + e.sha + "\n"
+  }
+  return "sha256-" + crypto.sha256(canonical)
+}
+
+// Re-hash `dir` and throw if it doesn't match `expected`. The thrown
+// message includes both values so a user investigating drift can
+// confirm against `git diff` or a CI artifact without re-running sand.
+func verify(dir, expected) {
+  if (!expected || type(expected) != "string" || len(expected) == 0) {
+    throw "integrity.verify: missing or invalid expected hash"
+  }
+  let actual = compute(dir)
+  if (actual != expected) {
+    throw "integrity check failed for '%{dir}': expected %{expected}, got %{actual}"
+  }
+}
+
+export { compute, verify }

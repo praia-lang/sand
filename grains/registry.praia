@@ -7,26 +7,81 @@ func load(lockPath) {
     return { grains: {} }
   }
   let data = yaml.parse(content)
+  // A non-empty file that parses to nothing means the lockfile is
+  // corrupted. Refuse loudly instead of silently returning an empty
+  // map — quietly forgetting every previously-installed grain would
+  // make a subsequent `sand install` reinstall the world (worst
+  // case: replacing pinned commits with branch tips) without the
+  // user ever seeing the original lockfile drift.
   if (!data) {
-    return { grains: {} }
+    throw "Lockfile %{lockPath} is not valid YAML; refusing to silently start with an empty registry. Inspect and repair (or delete) the file."
   }
-  if (!data.grains) {
+  // Structural validation. Yaml.parse is permissive enough that
+  // `42`, `- a` (a sequence), or `grains: nope` (scalar at the
+  // grains key) all parse successfully — but every caller of
+  // load() expects `data.grains` to be a map of name → entry-map.
+  // Catch the shape mismatch here so the error names the file and
+  // the field rather than surfacing later as "string has no
+  // property 'source'" or "cannot iterate over number".
+  if (type(data) != "map") {
+    throw "Lockfile %{lockPath} top-level must be a YAML mapping (got %{type(data)})"
+  }
+  // Detect the `grains:` key by presence, not truthiness.
+  // `if (!data.grains)` collapses `grains: false`, `grains: 0`, and
+  // `grains: ""` together with "absent" and "explicitly null", so
+  // a hand-edited lockfile with `grains: false` used to silently
+  // load as an empty registry (typed-but-wrong values should throw,
+  // not silently zero out the lockfile).
+  let hasGrains = false
+  for (topKey in keys(data)) {
+    if (topKey == "grains") { hasGrains = true }
+  }
+  if (!hasGrains || data.grains == nil) {
+    // Missing key, or explicit `grains:` with no value (which YAML
+    // parses as nil) — both are equivalent to an empty registry.
     data.grains = {}
+  } elif (type(data.grains) != "map") {
+    throw "Lockfile %{lockPath} 'grains:' must be a YAML mapping (got %{type(data.grains)})"
+  }
+  // Each entry must itself be a map — otherwise downstream code
+  // that reads `info.source`, `info.version`, etc. would blow up
+  // with cryptic property-access errors. Loop here for the same
+  // file-and-field-naming reason as above.
+  let grainKeys = keys(data.grains)
+  for (k in grainKeys) {
+    if (type(data.grains[k]) != "map") {
+      throw "Lockfile %{lockPath} entry '%{k}' must be a YAML mapping (got %{type(data.grains[k])})"
+    }
   }
   return data
 }
 
 func save(lockPath, lock) {
+  // Each value is routed through yaml.stringify so a string with a
+  // `:`, `#`, or newline can't break out of its scalar context and
+  // produce malformed YAML — what the unquoted interpolation that
+  // used to live here was doing on edge-case inputs.
   let lines = "grains:\n"
   let grainKeys = keys(lock.grains)
   for (name in grainKeys) {
     let info = lock.grains[name]
-    lines = lines + "  %{name}:\n"
-    lines = lines + "    source: %{info.source}\n"
-    lines = lines + "    version: %{info.version}\n"
-    lines = lines + "    url: %{info.url}\n"
+    lines = lines + "  %{yaml.stringify(name)}:\n"
+    lines = lines + "    source: %{yaml.stringify(info.source)}\n"
+    lines = lines + "    version: %{yaml.stringify(info.version)}\n"
+    lines = lines + "    url: %{yaml.stringify(info.url)}\n"
+    // `commit` is the load-bearing reproducibility pin: a moving tag
+    // or branch tip in `version` is informational, but the SHA is what
+    // we re-check out on restore. `integrity` is the matching content
+    // hash, verified after each restore so a tampered or partial
+    // re-fetch can't masquerade as the pinned commit.
+    if (info.commit) {
+      lines = lines + "    commit: %{yaml.stringify(info.commit)}\n"
+    }
+    if (info.integrity) {
+      lines = lines + "    integrity: %{yaml.stringify(info.integrity)}\n"
+    }
     if (info.installed) {
-      lines = lines + "    installed: %{info.installed}\n"
+      lines = lines + "    installed: %{yaml.stringify(info.installed)}\n"
     }
   }
   fs.write(lockPath, lines)

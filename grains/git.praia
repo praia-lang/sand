@@ -19,22 +19,59 @@ func isValidRef(ref) {
   return ref.test("^[a-zA-Z0-9._+/-]+$")
 }
 
+// Detect the SCP-like SSH form `user@host:path`. The @ in that
+// shape belongs to the URL (separating user from host), not to a
+// `<spec>@<version>` pin. We use this in two places:
+//   • the version-splitter, to avoid treating SSH's @ as a pin;
+//   • the scheme-prepender, to avoid wrapping SSH URLs in https://.
+// `ssh://` URLs use the standard `://path` layout and are handled
+// alongside the other explicit schemes — they don't need this
+// detection.
+func _isSshSpec(s) {
+  if (s.startsWith("http://") || s.startsWith("https://") ||
+      s.startsWith("file://") || s.startsWith("ssh://")) {
+    return false
+  }
+  let at = s.indexOf("@")
+  let col = s.indexOf(":")
+  if (at <= 0 || col <= at) { return false }
+  // host must look like a hostname (no slashes, no colons, no @).
+  // This is intentionally narrow — anything looser would risk
+  // matching `user:pass@host` HTTP basic-auth forms.
+  let host = s.slice(at + 1, col)
+  if (len(host) == 0) { return false }
+  return host.test("^[a-zA-Z0-9._-]+$")
+}
+
 func parseSpec(spec) {
   let version = nil
   let urlPart = spec
 
-  // Split on @ for version, but skip the leading https:// or http://
+  // Pin syntax is `<spec>@<version>`. We split on the last `@` only
+  // when what follows it parses as a tag-like version: alphanumeric
+  // plus `._+-`. The pattern rejects:
+  //   • `:` — URL schemes (https://, ssh://) and SSH's host:path
+  //   • `/` — URL path components, SSH user@host/path
+  // both of which would otherwise be misread as a "version".
+  //
+  // Side-effect: a branch name containing `/` (e.g. `release/v1`)
+  // can't be used as a version pin via the `@` shorthand — the
+  // installer would have to receive that ref through some other
+  // channel. In practice, version pins are tags/SHAs; multi-segment
+  // branches are an anti-reproducibility pattern the lockfile's SHA
+  // pin is meant to discourage.
   let atIdx = urlPart.lastIndexOf("@")
   if (atIdx > 0) {
-    // Make sure @ isn't part of the protocol
-    let beforeAt = urlPart.slice(0, atIdx)
-    if (!beforeAt.endsWith("/") && !beforeAt.endsWith(":")) {
-      version = urlPart.slice(atIdx + 1, len(urlPart))
-      urlPart = beforeAt
+    let candidate = urlPart.slice(atIdx + 1, len(urlPart))
+    if (candidate.test("^[a-zA-Z0-9][a-zA-Z0-9._+-]*$")) {
+      version = candidate
+      urlPart = urlPart.slice(0, atIdx)
     }
   }
 
-  // Extract name from last path segment
+  // Extract name from last path segment. For SSH `user@host:path`,
+  // split("/") keeps the host:user prefix on the first segment but
+  // the last segment is still the repo name we want.
   let segments = urlPart.split("/")
   let name = segments[len(segments) - 1]
 
@@ -43,11 +80,27 @@ func parseSpec(spec) {
     name = name.slice(0, len(name) - 4)
   }
 
-  // Build full clone URL
+  // Build full clone URL.
+  //
+  // Don't prepend https:// to forms that are already a valid clone
+  // URL on their own — explicit schemes (https/http/file/ssh) and
+  // SCP-style SSH (user@host:path). Everything else is treated as
+  // shorthand for `https://<thing>`.
   let fullUrl = urlPart
-  if (!urlPart.startsWith("https://") && !urlPart.startsWith("http://") && !urlPart.startsWith("file://")) {
+  let alreadyScheme = urlPart.startsWith("https://") ||
+                       urlPart.startsWith("http://") ||
+                       urlPart.startsWith("file://") ||
+                       urlPart.startsWith("ssh://")
+  let isSsh = _isSshSpec(urlPart)
+  if (!alreadyScheme && !isSsh) {
     fullUrl = "https://%{urlPart}"
   }
+  // Append .git for HTTP(S) clone URLs. SSH clone URLs work with or
+  // without .git (github accepts both); appending matches convention
+  // and lets the canonical sand-source comparison (in cli.praia)
+  // line up across spec shapes that all normalize to the same URL.
+  // file:// URLs deliberately don't get .git — they point at
+  // file-system paths, not bare git repos.
   if (!fullUrl.endsWith(".git") && !fullUrl.startsWith("file://")) {
     fullUrl = "%{fullUrl}.git"
   }
@@ -101,4 +154,25 @@ func checkout(dir, tag, verbose = false) {
   throw "Version '%{tag}' not found (tried tag '%{tag}', 'v%{tag}')"
 }
 
-export { parseSpec, clone, checkout, isValidUrl, isValidRef }
+// Resolve a ref (or HEAD) to its full commit SHA. Used by the installer
+// to pin the lockfile to a concrete commit even when the user requested
+// a moving target like a branch tip or "latest".
+func revParse(dir, ref = "HEAD") {
+  if (!isValidRef(ref)) { throw "Invalid ref for rev-parse: %{ref}" }
+  let r = sys.exec(["git", "-C", dir, "rev-parse", ref])
+  if (r.exitCode != 0) {
+    let msg = r.stderr.strip()
+    if (len(msg) == 0) { msg = r.stdout.strip() }
+    throw "git rev-parse failed: %{msg}"
+  }
+  let sha = r.stdout.strip()
+  // A full SHA-1 commit is 40 lowercase hex chars. Defend against
+  // anything weirder so the value going into the lockfile is always
+  // round-trippable as a ref.
+  if (len(sha) != 40 || !sha.test("^[a-f0-9]+$")) {
+    throw "git rev-parse returned an unexpected value: %{sha}"
+  }
+  return sha
+}
+
+export { parseSpec, clone, checkout, revParse, isValidUrl, isValidRef }
