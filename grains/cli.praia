@@ -917,7 +917,30 @@ func cmdUpdate(args) {
         printer.error("Grain '%{name}' is not installed")
         sys.exit(1)
       }
+      // Special-case `sand update sand`: the synth entry pins
+      // `version` to the *running* sand's version, which would make
+      // updateOne reinstall the same version it's already at. The
+      // user explicitly asked to update, so probe upstream live
+      // (bypassing the 24h notifier cache) for the actual latest
+      // tag and pin to that. If the probe fails (offline, no tags)
+      // we fall through to the original synth version — same result
+      // as before this hook existed.
+      if (name == "sand" && flags.global) {
+        let latest = updateCheck.fetchLatestTag()
+        if (latest) {
+          info.version = latest
+        }
+      }
       updateOne(name, info)
+      // Refresh the notifier cache too: the user just ran an
+      // explicit update, so the cache should reflect "we know
+      // current upstream is X" rather than leaving last week's
+      // value to drive a spurious "update available" notice on
+      // the next sand invocation.
+      if (name == "sand" && flags.global && info.version &&
+          info.version != "latest") {
+        updateCheck.recordKnownLatest(info.version)
+      }
     }
   }
 }

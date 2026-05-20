@@ -85,6 +85,26 @@ func _fetchLatest() {
   return _maxTag(r.stdout)
 }
 
+// Public: fetch the latest upstream sand tag *without* consulting the
+// cache, and refresh the cache on success. Used by `sand update sand`
+// — the user explicitly asked to bump, so we want the truth, not a
+// 24h-stale recollection. Returns the tag (e.g. "0.4.0") or nil on
+// failure (offline, missing git, no tags).
+func fetchLatestTag() {
+  let latest = _fetchLatest()
+  if (latest) { _writeCache(latest, _now()) }
+  return latest
+}
+
+// Public: rewrite the cache to record `latest` as the known-upstream
+// version right now. `sand update sand` calls this after a successful
+// install so the next read-only command's notifier reflects the new
+// reality instead of warning about an update the user just performed.
+func recordKnownLatest(latest) {
+  if (!latest) { return }
+  _writeCache(latest, _now())
+}
+
 func _now() {
   let r = sys.exec(["date", "+%s"])
   return int(r.stdout.strip())
@@ -135,4 +155,4 @@ func notifyIfAvailable() {
   if (latest) { _writeCache(latest, now) }
 }
 
-export { notifyIfAvailable }
+export { notifyIfAvailable, fetchLatestTag, recordKnownLatest }
