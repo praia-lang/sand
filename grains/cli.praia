@@ -396,9 +396,10 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
     // Everything else (any other https/http URL) gets rejected here,
     // *before* the staging directory is created. A user who needs to
     // install a fork has to either land their changes upstream or
-    // install the fork under a different name.
-    if (name == "sand" && parsed.url != config.SAND_REPO_URL &&
-        !parsed.url.startsWith("file://")) {
+    // install the fork under a different name. The predicate lives
+    // in config.praia so tests can probe the policy without going
+    // through a full clone.
+    if (name == "sand" && !config.isAllowedSandSource(parsed.url)) {
       spin.done()
       throw "Refusing to install '%{spec}' as sand: the reserved 'sand' name may only be claimed by the canonical upstream at %{config.SAND_REPO_URL} or a local file:// mirror (got %{parsed.url})"
     }

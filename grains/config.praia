@@ -13,6 +13,19 @@ let EXT_GRAINS_DIR = "ext_grains"
 let SAND_REPO = "github.com/praia-lang/sand"
 let SAND_REPO_URL = "https://github.com/praia-lang/sand.git"
 
+// Reserved-name gate: is `url` an acceptable source for the grain
+// claiming the name "sand"? Only the canonical upstream or a local
+// file:// path. Anything else is a fork trying to take over the
+// reserved `sand` bin wrapper. Lives here next to the canonical URL
+// constants so the policy is testable in isolation — see
+// test_sand_reserved_name.praia.
+func isAllowedSandSource(url) {
+  if (!url || type(url) != "string") { return false }
+  if (url == SAND_REPO_URL) { return true }
+  if (url.startsWith("file://")) { return true }
+  return false
+}
+
 func home() {
   return sys.env("HOME")
 }
@@ -89,5 +102,6 @@ export {
   MANIFEST_NAME, LOCK_NAME, DEFAULT_MAIN, EXT_GRAINS_DIR,
   home, globalGrainsDir, systemGlobalDir, userGlobalDir, globalLockFile,
   localGrainsDir, localLockFile, ensureDir,
-  userBinDir, systemBinDir, globalBinDir
+  userBinDir, systemBinDir, globalBinDir,
+  isAllowedSandSource
 }
