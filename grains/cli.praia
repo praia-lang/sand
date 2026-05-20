@@ -3,6 +3,7 @@ use "./manifest"
 use "./bin"
 use "./git"
 use "./registry"
+use "./integrity"
 use "./printer"
 use "./updateCheck"
 use "progress"
@@ -205,10 +206,21 @@ func cmdInit(args) {
 // warning. If false (default), they propagate so the caller can roll back
 // the parent grain too.
 //
+// `pin` (40-char hex SHA or nil): if set, the lockfile's recorded commit;
+// the installer checks out that exact SHA instead of `parsed.version`.
+// Drives reproducible restore even when the version label is a moving
+// target like a branch tip or "latest".
+//
+// `expectedIntegrity` ("sha256-<hex>" or nil): if set, recompute the
+// installed dir's integrity hash after install and abort if it doesn't
+// match. Used by lockfile restore to detect tampered caches or a
+// repo-side history rewrite that left the commit SHA stable but changed
+// the content under it (e.g. a force-pushed tag).
+//
 // On failure this function ROLLS BACK its own state and re-throws. The
 // outermost (CLI) caller is responsible for catching the throw and exiting
 // with a non-zero code.
-func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {}, preserveInstalledDate = nil, ignoreMissing = false) {
+func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {}, preserveInstalledDate = nil, ignoreMissing = false, pin = nil, expectedIntegrity = nil) {
   let parsed = git.parseSpec(spec)
   let name = parsed.name
   ensure (manifest.isValidName(name)) else {
@@ -271,11 +283,24 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
     else { spin.tick("Cloning %{parsed.url}...") }
     git.clone(parsed.url, cloneDir, verbose)
 
-    if (parsed.version) {
+    // SHA pin (from a lockfile restore) always wins over the version
+    // label. Without this, restoring a lock that recorded `version:
+    // main` would re-fetch the latest `main` and silently install a
+    // newer revision — the entire point of pinning the SHA was to
+    // prevent that.
+    if (pin) {
+      if (verbose) { printer.info("Checking out pinned commit %{pin}...") }
+      else { spin.tick("Checking out pinned commit %{pin.slice(0, 8)}...") }
+      git.checkout(cloneDir, pin, verbose)
+    } elif (parsed.version) {
       if (verbose) { printer.info("Checking out %{parsed.version}...") }
       else { spin.tick("Checking out %{parsed.version}...") }
       git.checkout(cloneDir, parsed.version, verbose)
     }
+    // Capture the resolved commit *after* any checkout so the lockfile
+    // entry always reflects what we actually installed, never what the
+    // user typed.
+    let resolvedCommit = git.revParse(cloneDir, "HEAD")
 
     // Determine main file and grain name from manifest
     if (!verbose) { spin.tick("Checking manifest...") }
@@ -400,6 +425,18 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
       bin.pathAdvisory(binDir)
     }
 
+    // Compute the post-install integrity hash over destDir (after the
+    // .git strip, so directory copies don't include pack data that
+    // varies between fetches). For a lockfile restore this is the
+    // value we compare against expectedIntegrity; for a fresh install
+    // it's what we write into the lockfile so future restores have
+    // something to verify against.
+    if (!verbose) { spin.tick("Computing integrity...") }
+    let resolvedIntegrity = integrity.compute(destDir)
+    if (expectedIntegrity && expectedIntegrity != resolvedIntegrity) {
+      throw "Lockfile integrity mismatch for '%{name}': expected %{expectedIntegrity}, got %{resolvedIntegrity}. The pinned commit %{resolvedCommit} resolved to different content than was recorded — investigate before continuing."
+    }
+
     // Register in lock file
     if (!verbose) { spin.tick("Updating lock file...") }
     let version = parsed.version
@@ -412,6 +449,8 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
       source: spec,
       version: version,
       url: parsed.url,
+      commit: resolvedCommit,
+      integrity: resolvedIntegrity,
       installed: installedDate
     })
 
@@ -513,7 +552,6 @@ func installFromLockFile(isGlobal, verbose = false, ignoreMissing = false) {
   printer.header("Installing grains from %{config.LOCK_NAME}...")
 
   let installed = 0
-  let updated = 0
   for (name in grainKeys) {
     let info = lock.grains[name]
     let grainDir = path.join(targetDir, name)
@@ -522,14 +560,12 @@ func installFromLockFile(isGlobal, verbose = false, ignoreMissing = false) {
     // remove-and-reinstall path used here (lockfile restores shouldn't mark
     // the lock as modified).
     let preservedDate = info.installed
-    if (fs.exists(grainDir) && info.version == "latest") {
-      // Update: remove old version and reinstall from latest
-      printer.info("  %{name} is pinned to latest, updating...")
-      fs.remove(grainDir)
-      registry.remove(lockFile, name)
-      installGrain(str(info.source), isGlobal, verbose, false, {}, preservedDate, ignoreMissing)
-      updated = updated + 1
-    } elif (fs.exists(grainDir)) {
+    if (fs.exists(grainDir)) {
+      // Restore semantics: an existing grain dir is assumed to be at
+      // the lockfile state. The user runs `sand update` to bump.
+      // Forcing a refetch here would silently move "latest" pins
+      // forward — exactly what the SHA pin in the lockfile is meant
+      // to prevent.
       printer.info("  %{name}@%{info.version} already installed, skipping")
     } else {
       // Directory missing — remove stale lock entry so installGrain doesn't skip it
@@ -538,16 +574,22 @@ func installFromLockFile(isGlobal, verbose = false, ignoreMissing = false) {
       if (info.version && info.version != "latest") {
         spec = spec + "@" + info.version
       }
-      installGrain(spec, isGlobal, verbose, false, {}, preservedDate, ignoreMissing)
+      // SHA pin + integrity hash from the lockfile drive a reproducible
+      // re-install: even if `version` is a moving tag, we re-check out
+      // exactly the commit we recorded, and verify the resulting tree
+      // matches the content hash we recorded. Older lockfiles missing
+      // these fields fall back to a version-driven install (no pin)
+      // — the user is told indirectly via the lack of a checksum
+      // line when their next install regenerates the lockfile.
+      installGrain(spec, isGlobal, verbose, false, {}, preservedDate, ignoreMissing, info.commit, info.integrity)
       installed = installed + 1
     }
   }
 
-  if (installed == 0 && updated == 0) {
+  if (installed == 0) {
     printer.success("All grains already up to date")
   } else {
-    if (installed > 0) { printer.success("Installed %{installed} grain(s)") }
-    if (updated > 0) { printer.success("Updated %{updated} grain(s)") }
+    printer.success("Installed %{installed} grain(s)")
   }
 }
 

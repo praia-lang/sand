@@ -101,4 +101,25 @@ func checkout(dir, tag, verbose = false) {
   throw "Version '%{tag}' not found (tried tag '%{tag}', 'v%{tag}')"
 }
 
-export { parseSpec, clone, checkout, isValidUrl, isValidRef }
+// Resolve a ref (or HEAD) to its full commit SHA. Used by the installer
+// to pin the lockfile to a concrete commit even when the user requested
+// a moving target like a branch tip or "latest".
+func revParse(dir, ref = "HEAD") {
+  if (!isValidRef(ref)) { throw "Invalid ref for rev-parse: %{ref}" }
+  let r = sys.exec(["git", "-C", dir, "rev-parse", ref])
+  if (r.exitCode != 0) {
+    let msg = r.stderr.strip()
+    if (len(msg) == 0) { msg = r.stdout.strip() }
+    throw "git rev-parse failed: %{msg}"
+  }
+  let sha = r.stdout.strip()
+  // A full SHA-1 commit is 40 lowercase hex chars. Defend against
+  // anything weirder so the value going into the lockfile is always
+  // round-trippable as a ref.
+  if (len(sha) != 40 || !sha.test("^[a-f0-9]+$")) {
+    throw "git rev-parse returned an unexpected value: %{sha}"
+  }
+  return sha
+}
+
+export { parseSpec, clone, checkout, revParse, isValidUrl, isValidRef }

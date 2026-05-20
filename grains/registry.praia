@@ -25,6 +25,17 @@ func save(lockPath, lock) {
     lines = lines + "    source: %{info.source}\n"
     lines = lines + "    version: %{info.version}\n"
     lines = lines + "    url: %{info.url}\n"
+    // `commit` is the load-bearing reproducibility pin: a moving tag
+    // or branch tip in `version` is informational, but the SHA is what
+    // we re-check out on restore. `integrity` is the matching content
+    // hash, verified after each restore so a tampered or partial
+    // re-fetch can't masquerade as the pinned commit.
+    if (info.commit) {
+      lines = lines + "    commit: %{info.commit}\n"
+    }
+    if (info.integrity) {
+      lines = lines + "    integrity: %{info.integrity}\n"
+    }
     if (info.installed) {
       lines = lines + "    installed: %{info.installed}\n"
     }
