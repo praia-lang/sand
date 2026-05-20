@@ -190,13 +190,17 @@ func cmdInit(args) {
 
     let cppPath = path.join(pluginsDir, name + ".cpp")
     if (!fs.exists(cppPath)) {
-      fs.write(cppPath, "#include \"praia_plugin.h\"\n\nextern \"C\" void praia_register(PraiaMap* module) {\n    module->entries[\"hello\"] = Value(makeNative(\"%{name}.hello\", 0,\n        [](const std::vector<Value>& args) -> Value {\n            return Value(std::string(\"Hello from %{name}!\"));\n        }));\n}\n")
+      fs.write(cppPath, "#include \"praia_plugin.h\"\n\nPRAIA_DECLARE_ABI();\n\nextern \"C\" void praia_register(PraiaMap* module) {\n    module->entries[\"hello\"] = Value(makeNative(\"%{name}.hello\", 0,\n        [](const std::vector<Value>& args) -> Value {\n            return Value(std::string(\"Hello from %{name}!\"));\n        }));\n}\n")
     }
 
-    // Create Makefile
+    // Create Makefile. Build flags mirror praia's own `make plugin`
+    // target: -std=c++20 (the host headers use C++20), and
+    // _XOPEN_SOURCE=600 / _DARWIN_C_SOURCE so fiber.h's transitive
+    // <ucontext.h> include compiles cleanly on macOS and silences
+    // the deprecated-declarations warning on both platforms.
     let makefilePath = path.join(dir, "Makefile")
     if (!fs.exists(makefilePath)) {
-      fs.write(makefilePath, "PRAIA_INCLUDE := $(shell praia --include-path)\nUNAME_S := $(shell uname -s)\n\nifeq ($(UNAME_S),Darwin)\n  EXT = .dylib\n  LDFLAGS = -undefined dynamic_lookup\nelse\n  EXT = .so\n  LDFLAGS =\nendif\n\nall:\n\tg++ -std=c++17 -shared -fPIC -I$(PRAIA_INCLUDE) $(LDFLAGS) -o plugins/%{name}$(EXT) plugins/%{name}.cpp\n\nclean:\n\trm -f plugins/%{name}.dylib plugins/%{name}.so\n\n.PHONY: all clean\n")
+      fs.write(makefilePath, "PRAIA_INCLUDE := $(shell praia --include-path)\nUNAME_S := $(shell uname -s)\n\nifeq ($(UNAME_S),Darwin)\n  EXT = .dylib\n  LDFLAGS = -undefined dynamic_lookup\nelse\n  EXT = .so\n  LDFLAGS =\nendif\n\nall:\n\tg++ -std=c++20 -Wno-deprecated-declarations -D_XOPEN_SOURCE=600 -D_DARWIN_C_SOURCE -shared -fPIC -I$(PRAIA_INCLUDE) $(LDFLAGS) -o plugins/%{name}$(EXT) plugins/%{name}.cpp\n\nclean:\n\trm -f plugins/%{name}.dylib plugins/%{name}.so\n\n.PHONY: all clean\n")
     }
 
     printer.success("Created plugin grain '%{name}' with:")
