@@ -217,10 +217,16 @@ func cmdInit(args) {
 // repo-side history rewrite that left the commit SHA stable but changed
 // the content under it (e.g. a force-pushed tag).
 //
+// `force` (bool): bypass the "already installed" early-out. Used by
+// `sand update`, which by construction is replacing an existing
+// install. Without it, a plain `sand install foo` is still rejected
+// when foo is already installed — the user has to remove first, the
+// long-standing safety guard.
+//
 // On failure this function ROLLS BACK its own state and re-throws. The
 // outermost (CLI) caller is responsible for catching the throw and exiting
 // with a non-zero code.
-func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {}, preserveInstalledDate = nil, ignoreMissing = false, pin = nil, expectedIntegrity = nil) {
+func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {}, preserveInstalledDate = nil, ignoreMissing = false, pin = nil, expectedIntegrity = nil, force = false) {
   let parsed = git.parseSpec(spec)
   let name = parsed.name
   ensure (manifest.isValidName(name)) else {
@@ -253,10 +259,20 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
   let targetDir = getTargetDir(isGlobal)
   let lockFile = getLockFile(isGlobal)
 
-  // Check if already installed
-  let existing = registry.get(lockFile, name)
-  if (existing) {
-    printer.warn("'%{name}' is already installed (source: %{existing.source})")
+  // Snapshot the prior lockfile entry (if any) before we mutate
+  // anything. On failure we restore this exact entry so a botched
+  // update doesn't leave the user with neither a working grain nor
+  // a record of what was there before.
+  let priorLockEntry = registry.get(lockFile, name)
+
+  // "Already installed" only counts when the lock entry AND the dir
+  // are both present, AND the caller didn't pass force=true. The
+  // dir-missing case lets installFromLockFile restore over a stale
+  // lock entry; the force=true case lets `sand update` replace the
+  // current install via stage-then-swap.
+  let preExistingDir = path.join(targetDir, name)
+  if (priorLockEntry && fs.exists(preExistingDir) && !force) {
+    printer.warn("'%{name}' is already installed (source: %{priorLockEntry.source})")
     printer.info("Use 'sand remove %{name}' first to reinstall")
     return
   }
@@ -322,10 +338,14 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
           try { fs.remove(tmpDir) } catch (e) {}
           return
         }
-        let existingByName = registry.get(lockFile, name)
-        if (existingByName) {
+        // Re-snapshot the prior lock entry under the manifest-declared
+        // name so rollback can restore it. Same "lock + dir = refuse,
+        // lock alone = restore" rule as the up-front check.
+        priorLockEntry = registry.get(lockFile, name)
+        let renamedDir = path.join(targetDir, name)
+        if (priorLockEntry && fs.exists(renamedDir) && !force) {
           spin.done()
-          printer.warn("'%{name}' is already installed (source: %{existingByName.source})")
+          printer.warn("'%{name}' is already installed (source: %{priorLockEntry.source})")
           printer.info("Use 'sand remove %{name}' first to reinstall")
           try { fs.remove(tmpDir) } catch (e) {}
           return
@@ -343,73 +363,79 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
     // Ensure target directory exists
     config.ensureDir(targetDir)
 
-    // Copy the entire grain as a directory.
+    // Stage-then-swap for every grain.
     //
-    // Two paths:
-    //   • Default: fs.remove(destDir) + fs.copy(cloneDir, destDir). A
-    //     crash mid-copy leaves a partial grain dir, but the parent
-    //     installer + lockfile mismatch makes that recoverable.
-    //   • Self-update of sand: stage to a `.new.<pid>` sibling first,
-    //     then two atomic renames bracket a microsecond-long window
-    //     where destDir doesn't exist. If anything between the
-    //     renames fails we restore from `.bak.<pid>`. Critical here
-    //     because the running sand IS the directory being replaced.
+    // Stage the new content into a sibling directory, run all the
+    // checks that can fail (integrity, validation), and *only then*
+    // atomically rename it into place. The previous install — and
+    // any sand-managed bin wrappers that point at it — stays
+    // working until the swap succeeds.
+    //
+    // Old broken pattern (removed): a non-sand grain went through
+    // `fs.remove(destDir); fs.copy(cloneDir, destDir)`. If the copy
+    // crashed midway, the user was left with neither the old
+    // install nor a complete new one. Sand's self-update already
+    // used the staging pattern; this generalizes it.
     destDir = path.join(targetDir, name)
-    if (name == "sand") {
-      if (verbose) { printer.info("Atomic-swap to %{destDir}") }
-      else { spin.tick("Atomic-swap to %{targetDir}...") }
-      let pid = str(sys.getpid())
-      let newDir = destDir + ".new." + pid
-      let bakDir = destDir + ".bak." + pid
-      // Clean up any leftovers from an interrupted prior run.
-      if (fs.exists(newDir)) { fs.remove(newDir) }
-      if (fs.exists(bakDir)) { fs.remove(bakDir) }
-      fs.copy(cloneDir, newDir)
-      let newDotGit = path.join(newDir, ".git")
-      if (fs.exists(newDotGit)) { fs.remove(newDotGit) }
-      if (fs.exists(destDir)) { fs.move(destDir, bakDir) }
-      destDirTouched = true
-      try {
-        fs.move(newDir, destDir)
-      } catch (err) {
-        // Restore the old install so the user still has a working sand.
-        // If the restore succeeds, clear destDirTouched so the OUTER
-        // catch (which fires after we re-throw) doesn't then turn
-        // around and delete the freshly-restored sand. Without this
-        // reset, a failed atomic swap leaves the user with NO sand
-        // at all.
-        if (fs.exists(bakDir) && !fs.exists(destDir)) {
-          try {
-            fs.move(bakDir, destDir)
-            destDirTouched = false
-          } catch (e) {}
-        }
-        if (fs.exists(newDir)) { try { fs.remove(newDir) } catch (e) {} }
-        throw err
-      }
-      if (fs.exists(bakDir)) { try { fs.remove(bakDir) } catch (e) {} }
-    } else {
-      if (verbose) { printer.info("Copying to %{targetDir}/%{name}/") }
-      else { spin.tick("Copying to %{targetDir}...") }
-      if (fs.exists(destDir)) {
-        fs.remove(destDir)
-      }
-      destDirTouched = true
-      fs.copy(cloneDir, destDir)
+    let pid = str(sys.getpid())
+    let stageDir = destDir + ".new." + pid
+    let bakDir = destDir + ".bak." + pid
+
+    if (verbose) { printer.info("Staging to %{stageDir}") }
+    else { spin.tick("Staging to %{targetDir}...") }
+
+    // Clean up any leftovers from an interrupted prior run.
+    if (fs.exists(stageDir)) { fs.remove(stageDir) }
+    if (fs.exists(bakDir))   { fs.remove(bakDir) }
+
+    fs.copy(cloneDir, stageDir)
+    let stageDotGit = path.join(stageDir, ".git")
+    if (fs.exists(stageDotGit)) { fs.remove(stageDotGit) }
+
+    // Integrity check runs against the staged dir before the swap
+    // so a mismatch (tampered cache, corrupt clone) doesn't touch
+    // the still-installed previous version.
+    if (!verbose) { spin.tick("Computing integrity...") }
+    let resolvedIntegrity = integrity.compute(stageDir)
+    if (expectedIntegrity && expectedIntegrity != resolvedIntegrity) {
+      try { fs.remove(stageDir) } catch (e) {}
+      throw "Lockfile integrity mismatch for '%{name}': expected %{expectedIntegrity}, got %{resolvedIntegrity}. The pinned commit %{resolvedCommit} resolved to different content than was recorded — investigate before continuing."
     }
 
-    // Remove .git directory from the copy (no-op for the sand path,
-    // which strips it from the staging dir before the rename).
-    let dotGit = path.join(destDir, ".git")
-    if (fs.exists(dotGit)) {
-      fs.remove(dotGit)
+    // Two-rename atomic swap. The window where destDir doesn't
+    // exist is bracketed by both renames on the same filesystem and
+    // is microsecond-scale — short enough that a concurrent reader
+    // is unlikely to catch the gap, and any failure between the two
+    // renames triggers the catch below which restores destDir from
+    // bakDir.
+    if (verbose) { printer.info("Atomic-swap to %{destDir}") }
+    else { spin.tick("Atomic-swap to %{targetDir}...") }
+    if (fs.exists(destDir)) { fs.move(destDir, bakDir) }
+    destDirTouched = true
+    try {
+      fs.move(stageDir, destDir)
+    } catch (err) {
+      // The swap failed mid-flight. If bakDir survived, restore it
+      // so the user still has a working install — and clear
+      // destDirTouched so the outer catch doesn't then turn around
+      // and delete the freshly-restored dir.
+      if (fs.exists(bakDir) && !fs.exists(destDir)) {
+        try {
+          fs.move(bakDir, destDir)
+          destDirTouched = false
+        } catch (e) {}
+      }
+      if (fs.exists(stageDir)) { try { fs.remove(stageDir) } catch (e) {} }
+      throw err
     }
 
     // Plant `bin:` wrappers on PATH for global installs. Local installs
-    // are project-scoped and shouldn't pollute the user's PATH. We do
-    // this before the lockfile write so a bin-installation failure
-    // (reserved name, foreign-file collision, missing script) rolls
-    // back through the same path as any other install error.
+    // are project-scoped and shouldn't pollute the user's PATH. Wrappers
+    // get written AFTER the swap so they always point at a destDir
+    // that actually holds the new content — never a half-installed
+    // directory. bin.install also overwrites existing sand-managed
+    // wrappers with per-target backup, so an update of a kept-name
+    // entry restores the old wrapper bytes on rollback.
     if (isGlobal && grainManifest && grainManifest.bin) {
       let binDir = config.globalBinDir()
       config.ensureDir(binDir)
@@ -425,17 +451,10 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
       bin.pathAdvisory(binDir)
     }
 
-    // Compute the post-install integrity hash over destDir (after the
-    // .git strip, so directory copies don't include pack data that
-    // varies between fetches). For a lockfile restore this is the
-    // value we compare against expectedIntegrity; for a fresh install
-    // it's what we write into the lockfile so future restores have
-    // something to verify against.
-    if (!verbose) { spin.tick("Computing integrity...") }
-    let resolvedIntegrity = integrity.compute(destDir)
-    if (expectedIntegrity && expectedIntegrity != resolvedIntegrity) {
-      throw "Lockfile integrity mismatch for '%{name}': expected %{expectedIntegrity}, got %{resolvedIntegrity}. The pinned commit %{resolvedCommit} resolved to different content than was recorded — investigate before continuing."
-    }
+    // The old install's content has been replaced — drop the
+    // backup. (Kept above by intent: if planting wrappers had
+    // failed, the catch below would restore from bak.)
+    if (fs.exists(bakDir)) { try { fs.remove(bakDir) } catch (e) {} }
 
     // Register in lock file
     if (!verbose) { spin.tick("Updating lock file...") }
@@ -504,17 +523,47 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
     }
   } catch (err) {
     if (!verbose) { spin.done() }
-    // Roll back partial state so we don't leave an orphaned grain dir
-    // (no lock entry) or stale lock entry pointing at nothing.
-    // Bin wrappers we planted in the bindir go away first so a working
-    // wrapper never outlives the grain dir it points at.
+    // Bin wrappers we planted in this run go away first so a working
+    // wrapper never outlives the grain dir it points at. (bin.install
+    // restored any sand-managed wrappers it overwrote within its own
+    // try/catch; we only have to clean up wrappers we *created*.)
     for (w in binWrappers) {
       try { fs.remove(w) } catch (e) {}
     }
-    if (destDirTouched && fs.exists(destDir)) {
-      try { fs.remove(destDir) } catch (e) {}
+    // Roll the dir back to the prior install if we swapped. If we
+    // never got to the swap, destDirTouched is false and the old
+    // install is right where the user left it.
+    if (destDirTouched) {
+      let pidS = str(sys.getpid())
+      let stageRollback = destDir + ".new." + pidS
+      let bakRollback   = destDir + ".bak." + pidS
+      if (fs.exists(stageRollback)) {
+        try { fs.remove(stageRollback) } catch (e) {}
+      }
+      if (fs.exists(bakRollback)) {
+        // Update path: there was a prior install. Restore it.
+        if (fs.exists(destDir)) {
+          try { fs.remove(destDir) } catch (e) {}
+        }
+        try { fs.move(bakRollback, destDir) } catch (e) {}
+      } else {
+        // Fresh install path: no prior content to restore — just
+        // unlink the half-installed dir so the user is back to a
+        // pristine "never installed this grain" state.
+        if (fs.exists(destDir)) {
+          try { fs.remove(destDir) } catch (e) {}
+        }
+      }
     }
-    try { registry.remove(lockFile, name) } catch (e) {}
+    // Lockfile rollback: if there was a prior entry, put it back so a
+    // failed update doesn't strand the user without a record of what
+    // used to be installed. Only remove the entry outright when there
+    // was nothing here before this install attempt.
+    if (priorLockEntry) {
+      try { registry.add(lockFile, name, priorLockEntry) } catch (e) {}
+    } else {
+      try { registry.remove(lockFile, name) } catch (e) {}
+    }
     try { fs.remove(tmpDir) } catch (e) {}
     // Re-throw so the caller (top-level cmd or parent installGrain) can
     // decide whether to abort the chain or roll back further.
@@ -568,8 +617,12 @@ func installFromLockFile(isGlobal, verbose = false, ignoreMissing = false) {
       // to prevent.
       printer.info("  %{name}@%{info.version} already installed, skipping")
     } else {
-      // Directory missing — remove stale lock entry so installGrain doesn't skip it
-      registry.remove(lockFile, name)
+      // Directory missing — installGrain treats "lock entry exists
+      // but dir is gone" as the restore path and overwrites the
+      // entry on success. We deliberately do NOT pre-remove the
+      // lock entry: if the install fails, installGrain's catch
+      // restores the prior entry so the user still has the
+      // information they need to retry.
       let spec = str(info.source)
       if (info.version && info.version != "latest") {
         spec = spec + "@" + info.version
@@ -643,78 +696,71 @@ func cmdUpdate(args) {
   func updateOne(name, info) {
     printer.info("Updating %{name}...")
     let grainDir = path.join(targetDir, name)
-    // Snapshot of sand-managed wrappers before we unlink them — used
-    // to restore on installGrain failure for sand specifically, so a
-    // botched self-update doesn't leave the user without a `sand`
-    // command on PATH. nil for non-sand grains (losing wrappers on a
-    // failed update of a user grain is acceptable; the grain dir was
-    // already removed). Map shape: {wrapperPath: {content, mode}}.
-    let savedSandWrappers = nil
-    // Read the OLD manifest before removing the grain dir so any
-    // bin: entries that the new version renamed or dropped get
-    // unlinked. installGrain will write the new bin: set during
-    // reinstall, so kept-name entries are simply overwritten.
+
+    // Snapshot the OLD bin: list before installGrain runs. We don't
+    // touch the wrappers yet — installGrain plants the new ones via
+    // atomic overwrite, and we use this list afterward to unlink any
+    // wrapper that the new version dropped (renamed-away or removed).
+    // Reading the old manifest *before* the install lets that diff
+    // happen even if the new manifest looks completely different.
+    let oldBinNames = []
     if (flags.global && fs.exists(grainDir)) {
       try {
         let oldManifest = manifest.read(grainDir)
         if (oldManifest.bin) {
-          if (name == "sand") {
-            // Capture content + mode of each sand-managed wrapper
-            // before bin.remove tears it down, so the catch below
-            // can put them back if installGrain fails. The atomic
-            // swap restoring grainDir without restoring wrappers
-            // would leave the user able to run sand via `praia
-            // <path>/main.praia` but not via the `sand` command.
-            savedSandWrappers = {}
-            let oldBinDir = config.globalBinDir()
-            let oldBinKeys = keys(oldManifest.bin)
-            for (oldBinName in oldBinKeys) {
-              let oldPath = path.join(oldBinDir, oldBinName)
-              if (fs.exists(oldPath) && bin.isSandManaged(oldPath)) {
-                try {
-                  savedSandWrappers[oldPath] = {
-                    content: fs.read(oldPath),
-                    mode: fs.stat(oldPath).mode
-                  }
-                } catch (e) {}
-              }
-            }
-          }
-          bin.remove(oldManifest, config.globalBinDir())
+          oldBinNames = keys(oldManifest.bin)
         }
       } catch (e) {
-        // Same defensive policy as cmdRemove — don't block update.
+        // Same defensive policy as cmdRemove — a malformed old
+        // manifest shouldn't block an update. Worst case: an orphan
+        // wrapper lingers; the user can `sand remove` to clean up.
       }
     }
-    // For non-sand grains, clear the install dir so installGrain
-    // sees a clean slate. For sand we *keep* the dir — installGrain's
-    // atomic swap moves it to .bak.<pid> first so a mid-install
-    // failure can restore it. Pre-removing here would leave nothing
-    // to restore.
-    if (name != "sand" && fs.exists(grainDir)) { fs.remove(grainDir) }
-    registry.remove(lockFile, name)
+
     let spec = str(info.source)
     if (info.version && info.version != "latest") {
       spec = spec + "@" + info.version
     }
     try {
-      installGrain(spec, flags.global, flags.verbose, false, {}, nil, flags.ignoreMissing)
+      // installGrain stages the new content alongside the existing
+      // grainDir, atomically renames into place, and (on any failure
+      // before the rename succeeds) restores the prior install via
+      // its bakDir. We *never* pre-remove grainDir here — that was
+      // the old bug. `force=true` opts past the "already installed"
+      // refuse check, which is otherwise the right behavior for
+      // plain `sand install`.
+      installGrain(spec, flags.global, flags.verbose, false, {}, nil, flags.ignoreMissing, nil, nil, true)
     } catch (e) {
-      // Restore the saved sand wrapper(s) before propagating the
-      // failure, so the user keeps a working `sand` on PATH paired
-      // with the just-restored grain dir.
-      if (savedSandWrappers != nil) {
-        let wkeys = keys(savedSandWrappers)
-        for (wpath in wkeys) {
-          let b = savedSandWrappers[wpath]
-          try {
-            fs.atomicWrite(wpath, b.content)
-            fs.chmod(wpath, b.mode)
-          } catch (e2) {}
-        }
-      }
+      // installGrain rolled back its own state — destDir + any
+      // wrappers it had planted. The OLD wrappers (and old
+      // grainDir) were never touched, so the user's CLI keeps
+      // working at the prior version.
       printer.error("Update failed: %{e}")
       sys.exit(1)
+    }
+
+    // Post-success: clean up orphan wrappers. Anything in oldBinNames
+    // that isn't in the *new* manifest's bin: section is now
+    // unreferenced and should go away. Wrappers planted by
+    // installGrain (for kept-or-new names) stay.
+    if (flags.global && len(oldBinNames) > 0 && fs.exists(grainDir)) {
+      let newBinNames = []
+      try {
+        let newManifest = manifest.read(grainDir)
+        if (newManifest.bin) {
+          newBinNames = keys(newManifest.bin)
+        }
+      } catch (e) {}
+      let newBinSet = {}
+      for (n in newBinNames) { newBinSet[n] = true }
+      let oldBinDir = config.globalBinDir()
+      for (oldBinName in oldBinNames) {
+        if (newBinSet.has(oldBinName)) { continue }
+        let oldPath = path.join(oldBinDir, oldBinName)
+        if (fs.exists(oldPath) && bin.isSandManaged(oldPath)) {
+          try { fs.remove(oldPath) } catch (e) {}
+        }
+      }
     }
   }
 
