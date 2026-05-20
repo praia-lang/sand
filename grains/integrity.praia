@@ -21,9 +21,15 @@
 func _isSafeName(name) {
   // Defense against a hostile filesystem returning crafted entries.
   // We never want ".." or absolute components leaking into the
-  // canonical manifest text we feed into sha256 below.
+  // canonical manifest text we feed into sha256 below — and we
+  // reject embedded NUL because that's the byte we use to delimit
+  // path from sha in the canonical manifest. A filename with an
+  // inline NUL could otherwise be crafted to collide with a
+  // different (path, sha) pair on disk, producing two trees with
+  // identical integrity hashes.
   if (name == "." || name == "..") { return false }
   if (name.contains("/")) { return false }
+  if (name.contains("\x00")) { return false }
   return true
 }
 
