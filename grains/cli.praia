@@ -925,21 +925,23 @@ func cmdUpdate(args) {
       // tag and pin to that. If the probe fails (offline, no tags)
       // we fall through to the original synth version — same result
       // as before this hook existed.
+      let sandLatest = nil
       if (name == "sand" && flags.global) {
-        let latest = updateCheck.fetchLatestTag()
-        if (latest) {
-          info.version = latest
+        sandLatest = updateCheck.fetchLatestTag()
+        if (sandLatest) {
+          info.version = sandLatest
         }
       }
       updateOne(name, info)
-      // Refresh the notifier cache too: the user just ran an
-      // explicit update, so the cache should reflect "we know
-      // current upstream is X" rather than leaving last week's
-      // value to drive a spurious "update available" notice on
-      // the next sand invocation.
-      if (name == "sand" && flags.global && info.version &&
-          info.version != "latest") {
-        updateCheck.recordKnownLatest(info.version)
+      // Refresh the notifier cache only when we actually learned a
+      // real upstream tag in this run. Using info.version here would
+      // leak the synth's stale local-running version into the cache
+      // when the probe failed — exactly what would then suppress a
+      // legitimate "update available" notice on the next sand
+      // invocation. Skip the "latest" sentinel too; it's never a
+      // valid tag value for the notifier to compare against.
+      if (sandLatest && sandLatest != "latest") {
+        updateCheck.recordKnownLatest(sandLatest)
       }
     }
   }
