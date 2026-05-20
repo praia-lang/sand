@@ -26,7 +26,19 @@ func load(lockPath) {
   if (type(data) != "map") {
     throw "Lockfile %{lockPath} top-level must be a YAML mapping (got %{type(data)})"
   }
-  if (!data.grains) {
+  // Detect the `grains:` key by presence, not truthiness.
+  // `if (!data.grains)` collapses `grains: false`, `grains: 0`, and
+  // `grains: ""` together with "absent" and "explicitly null", so
+  // a hand-edited lockfile with `grains: false` used to silently
+  // load as an empty registry (typed-but-wrong values should throw,
+  // not silently zero out the lockfile).
+  let hasGrains = false
+  for (topKey in keys(data)) {
+    if (topKey == "grains") { hasGrains = true }
+  }
+  if (!hasGrains || data.grains == nil) {
+    // Missing key, or explicit `grains:` with no value (which YAML
+    // parses as nil) — both are equivalent to an empty registry.
     data.grains = {}
   } elif (type(data.grains) != "map") {
     throw "Lockfile %{lockPath} 'grains:' must be a YAML mapping (got %{type(data.grains)})"
