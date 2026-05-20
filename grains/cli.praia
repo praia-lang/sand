@@ -82,23 +82,40 @@ func getLockFile(isGlobal) {
 // exists yet. Avoids requiring a separate "register-self" bootstrap
 // step from the Makefile: every operation that needs a sand entry —
 // list, update, info — calls this on miss and gets a sensible one
-// derived from sand's own grain.yaml. Returns nil if sand isn't
-// installed at the global location.
+// derived from sand's own grain.yaml.
+//
+// Checks the system-global location too (not just the root-scoped
+// `globalGrainsDir()`) so a non-root user invoking `sand update sand`
+// against a system-wide sand install still gets a valid synth entry.
+// The downstream `installGrain` preflight then catches the actual
+// "this needs sudo" case with a clean message — instead of bailing
+// here with a misleading "Grain 'sand' is not installed".
+//
+// Returns nil only when sand isn't installed in any of the standard
+// locations.
 func synthSandEntry() {
-  let sandDir = path.join(config.globalGrainsDir(), "sand")
-  let manifestPath = path.join(sandDir, config.MANIFEST_NAME)
-  if (!fs.exists(manifestPath)) { return nil }
-  try {
-    let m = manifest.read(sandDir)
-    return {
-      source: config.SAND_REPO,
-      version: m.version,
-      url: config.SAND_REPO_URL,
-      installed: "bundled"
+  let candidates = [
+    path.join(config.globalGrainsDir(), "sand"),
+    path.join(config.systemGlobalDir(), "sand"),
+    path.join(config.userGlobalDir(),   "sand"),
+  ]
+  for (sandDir in candidates) {
+    let manifestPath = path.join(sandDir, config.MANIFEST_NAME)
+    if (!fs.exists(manifestPath)) { continue }
+    try {
+      let m = manifest.read(sandDir)
+      return {
+        source: config.SAND_REPO,
+        version: m.version,
+        url: config.SAND_REPO_URL,
+        installed: "bundled"
+      }
+    } catch (e) {
+      // Try the next candidate — a malformed manifest at one
+      // location shouldn't mask a working install at another.
     }
-  } catch (e) {
-    return nil
   }
+  return nil
 }
 
 // Look up `name` in `lockFile`, falling back to a synthesized entry
@@ -687,10 +704,12 @@ func cmdUpdate(args) {
   let lock = registry.load(lockFile)
   let grainKeys = keys(lock.grains)
 
-  if (len(grainKeys) == 0) {
-    printer.info("No grains installed")
-    return
-  }
+  // NOTE: don't short-circuit on an empty lockfile here. The
+  // named-args path below uses registryGetOrSynth so that
+  // `sand update sand` works on a fresh `make install` (the
+  // bootstrap planted sand under ext_grains/ but never wrote a
+  // lockfile entry). An early return based on len(grainKeys)==0
+  // would skip past that synthesize logic.
 
   // Helper: re-fetch a single grain by name. Assumes the entry exists.
   func updateOne(name, info) {
@@ -765,7 +784,13 @@ func cmdUpdate(args) {
   }
 
   if (len(flags.rest) == 0) {
-    // Update every grain pinned to "latest"
+    // Update every grain pinned to "latest". An empty lockfile here
+    // is the only case where "no grains installed" applies — the
+    // user passed no names, so registryGetOrSynth can't rescue us.
+    if (len(grainKeys) == 0) {
+      printer.info("No grains installed")
+      return
+    }
     let updated = 0
     for (name in grainKeys) {
       let info = lock.grains[name]
