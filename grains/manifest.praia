@@ -138,7 +138,7 @@ func create(name) {
     name: name,
     version: "0.1.0",
     description: "A tiny sand grain on a large beach",
-    author: "",
+    author: "Unknown",
     license: "MIT",
     main: config.DEFAULT_MAIN,
     dependencies: {}
