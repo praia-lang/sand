@@ -95,13 +95,16 @@ func configKeyType(k) {
 func readUserConfig() {
   let p = userConfigFile()
   if (!fs.exists(p)) { return {} }
-  let content = fs.read(p)
+  // Both fs.read and yaml.parse are wrapped: fs.read can throw on
+  // a TOCTOU delete after fs.exists or on a permission flap, and
+  // yaml.parse — though permissive today — shouldn't be allowed to
+  // take down the caller on a future tightening or a pathological
+  // hand-edit. The function's contract is "always returns a map";
+  // cmdConfig calls it without its own try/catch precisely because
+  // of this guarantee.
+  let content = ""
+  try { content = fs.read(p) } catch (e) { return {} }
   if (len(content.strip()) == 0) { return {} }
-  // yaml.parse is permissive on the cases tested, but a future
-  // tightening (or a pathological hand-edit) shouldn't take down
-  // `sand config` — wrap defensively so this function's contract is
-  // "always returns a map". cmdConfig calls it without its own
-  // try/catch precisely because of this guarantee.
   let data = nil
   try { data = yaml.parse(content) } catch (e) { return {} }
   if (!data || type(data) != "map") { return {} }

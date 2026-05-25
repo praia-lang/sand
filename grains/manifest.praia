@@ -104,16 +104,20 @@ func write(dir, m) {
     lines = lines + "description: %{yaml.stringify(m.description)}\n"
   }
   // `author` is unconditionally emitted to keep the manifest shape
-  // stable across grain.yamls written by sand — empty values render
-  // as a bare `author: ` placeholder (not `author: ""`, which would
-  // pollute a freshly-init'd file with literal quote characters the
-  // user has to delete by hand). Empty strings are truthy in Praia,
-  // so the check has to look at length explicitly.
+  // stable across grain.yamls written by sand. Two display rules:
+  //   • nil OR empty string  → bare `author: ` (the user-requested
+  //     placeholder — `author: ""` looks like noise the user has
+  //     to clean up by hand);
+  //   • anything else        → `author: %{yaml.stringify(a)}` —
+  //     so a non-string author value (e.g. someone hand-edited
+  //     `author: 42` into grain.yaml) survives a read/write round
+  //     trip rather than being silently erased.
   let a = m.author
-  if (a != nil && type(a) == "string" && len(a) > 0) {
-    lines = lines + "author: %{yaml.stringify(a)}\n"
-  } else {
+  let isEmpty = (a == nil) || (type(a) == "string" && len(a) == 0)
+  if (isEmpty) {
     lines = lines + "author: \n"
+  } else {
+    lines = lines + "author: %{yaml.stringify(a)}\n"
   }
   if (has(m, "license") && m.license) {
     lines = lines + "license: %{yaml.stringify(m.license)}\n"
