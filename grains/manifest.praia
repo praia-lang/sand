@@ -103,8 +103,21 @@ func write(dir, m) {
   if (has(m, "description")) {
     lines = lines + "description: %{yaml.stringify(m.description)}\n"
   }
-  if (has(m, "author")) {
-    lines = lines + "author: %{yaml.stringify(m.author)}\n"
+  // `author` is unconditionally emitted to keep the manifest shape
+  // stable across grain.yamls written by sand. Two display rules:
+  //   • nil OR empty string  → bare `author: ` (the user-requested
+  //     placeholder — `author: ""` looks like noise the user has
+  //     to clean up by hand);
+  //   • anything else        → `author: %{yaml.stringify(a)}` —
+  //     so a non-string author value (e.g. someone hand-edited
+  //     `author: 42` into grain.yaml) survives a read/write round
+  //     trip rather than being silently erased.
+  let a = m.author
+  let isEmpty = (a == nil) || (type(a) == "string" && len(a) == 0)
+  if (isEmpty) {
+    lines = lines + "author: \n"
+  } else {
+    lines = lines + "author: %{yaml.stringify(a)}\n"
   }
   if (has(m, "license") && m.license) {
     lines = lines + "license: %{yaml.stringify(m.license)}\n"
@@ -133,12 +146,15 @@ func write(dir, m) {
   fs.write(filepath, lines)
 }
 
-func create(name) {
+func create(name, author = nil) {
+  // `author` is always present as a key — write() emits it as either
+  // `author: <value>` or bare `author: ` (no `""`) so the field acts
+  // as a placeholder the user can fill in.
   return {
     name: name,
     version: "0.1.0",
     description: "A tiny sand grain on a large beach",
-    author: "Unknown",
+    author: author,
     license: "MIT",
     main: config.DEFAULT_MAIN,
     dependencies: {}

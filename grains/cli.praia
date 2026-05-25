@@ -25,6 +25,9 @@ func printUsage() {
   print("  sand list                  List locally installed grains")
   print("  sand list --global         List globally installed grains")
   print("  sand info <name>           Show info about an installed grain")
+  print("  sand config                List user settings (~/.praia/sand-config.yaml)")
+  print("  sand config <key>          Print a single setting")
+  print("  sand config <key> <value>  Set a user setting (e.g. author)")
   print("  sand --version             Print sand version")
   print("  sand help                  Show this help")
   print("")
@@ -151,7 +154,22 @@ func cmdInit(args) {
   }
 
   let name = path.basename(dir)
-  let m = manifest.create(name)
+  // Pull defaults from ~/.praia/sand-config.yaml so `sand init`
+  // doesn't require hand-editing every grain.yaml. The config call
+  // is wrapped so a corrupt or unreadable config file can't block
+  // init.
+  let defaultAuthor = nil
+  let defaultLicense = nil
+  try {
+    let cfg = config.readUserConfig()
+    if (cfg.author)  { defaultAuthor  = cfg.author }
+    if (cfg.license) { defaultLicense = cfg.license }
+  } catch (e) {}
+  let m = manifest.create(name, defaultAuthor)
+  // Override the hard-coded "MIT" only when the user explicitly
+  // configured one — otherwise a brand-new sand install still
+  // produces the same grain.yaml as before this feature landed.
+  if (defaultLicense) { m.license = defaultLicense }
   manifest.write(dir, m)
 
   // Splice a commented `bin:` hint into the freshly written grain.yaml
@@ -1237,6 +1255,101 @@ func cmdInfo(args) {
   }
 }
 
+// sand config - read or write user settings persisted in
+// ~/.praia/sand-config.yaml. Three shapes:
+//   sand config                 - list every set key=value
+//   sand config <key>           - print the value for <key> (or empty)
+//   sand config <key> <value>   - set <key> to <value>
+// The recognized-keys whitelist (config.CONFIG_KEYS) is enforced on
+// the write path so a typo doesn't silently land in the file.
+func cmdConfig(args) {
+  let flags = parseFlags(args)
+  let rest = flags.rest
+
+  let cfg = config.readUserConfig()
+
+  if (len(rest) == 0) {
+    // List every set value. Empty output when nothing has been
+    // configured is the right signal - sand config is intentionally
+    // quiet on an unmodified install.
+    let ks = keys(cfg)
+    if (len(ks) == 0) {
+      printer.info("No config values set (try: sand config author \"Your Name\")")
+      return
+    }
+    for (k in ks) {
+      print("%{k} = %{cfg[k]}")
+    }
+    return
+  }
+
+  let key = rest[0]
+  ensure (config.isValidConfigKey(key)) else {
+    printer.error("Unknown config key: '%{key}' (known keys: %{config.CONFIG_KEYS.join(", ")})")
+    sys.exit(1)
+  }
+
+  if (len(rest) == 1) {
+    // Read.
+    let v = cfg[key]
+    if (v == nil) { return }
+    print(v)
+    return
+  }
+
+  // Write
+  let val = rest[1]
+  for (i in 2..len(rest)) {
+    val = val + " " + rest[i]
+  }
+  // Type coercion. The schema declares each key's expected type so a
+  // boolean setting (updateCheck) gets stored as a real YAML bool
+  // rather than the string "false" - which would round-trip as
+  // truthy to anyone reading via `cfg[k]` without the string-tolerant
+  // helper in config.praia.
+  let expected = config.configKeyType(key)
+  let stored = val
+  let unset = false
+  if (expected == "bool") {
+    let lower = val.lower()
+    if (lower == "true" || lower == "1" || lower == "yes") { stored = true }
+    elif (lower == "false" || lower == "0" || lower == "no") { stored = false }
+    else {
+      printer.error("Config key '%{key}' expects a boolean (true/false), got '%{val}'")
+      sys.exit(1)
+    }
+  } else {
+    // String keys: an empty value means "clear this setting" rather
+    // than "store the empty string". Without this, a user trying to
+    // unset their author would round-trip an empty string into
+    // grain.yaml as author: "" (empty strings are truthy in
+    // Praia, so they pass the existing emit guards).
+    if (len(val) == 0) { unset = true }
+  }
+  if (unset) {
+    // delete by rebuilding without the key
+    let newCfg = {}
+    let kcs = keys(cfg)
+    for (kk in kcs) {
+      if (kk != key) { newCfg[kk] = cfg[kk] }
+    }
+    cfg = newCfg
+  } else {
+    cfg[key] = stored
+  }
+  try {
+    config.writeUserConfig(cfg)
+  } catch (e) {
+    printer.error("Failed to write %{config.userConfigFile()}: %{e}")
+    sys.exit(1)
+  }
+  if (unset) {
+    printer.success("Unset %{key}")
+  } else {
+    printer.success("Set %{key} = %{stored}")
+  }
+}
+
 // ── Dispatch ──
 
 func run(args) {
@@ -1259,6 +1372,7 @@ func run(args) {
   elif (cmd == "remove" || cmd == "rm") { cmdRemove(rest) }
   elif (cmd == "list" || cmd == "ls") { cmdList(rest) }
   elif (cmd == "info") { cmdInfo(rest) }
+  elif (cmd == "config") { cmdConfig(rest) }
   elif (cmd == "--version" || cmd == "-v") { print("sand v%{config.SAND_VERSION}") }
   elif (cmd == "help" || cmd == "--help" || cmd == "-h") { printUsage() }
   else {
@@ -1277,9 +1391,15 @@ func run(args) {
   // never break the actual command.
   let skipCheck = (cmd == "--version" || cmd == "-v"
                    || cmd == "help" || cmd == "--help" || cmd == "-h"
+                   || cmd == "config"
                    || ((cmd == "update" || cmd == "up")
                        && len(rest) > 0 && rest.contains("sand")))
-  if (!skipCheck) {
+  // User opt-out from ~/.praia/sand-config.yaml. Wrapped in case the
+  // config file is corrupt — a broken config must never block the
+  // actual command's execution.
+  let userDisabled = false
+  try { userDisabled = !config.updateCheckEnabled() } catch (e) {}
+  if (!skipCheck && !userDisabled) {
     try { updateCheck.notifyIfAvailable() } catch (e) {}
   }
 }
