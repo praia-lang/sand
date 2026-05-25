@@ -64,6 +64,77 @@ func localLockFile() {
   return path.join(sys.cwd(), LOCK_NAME)
 }
 
+// User-level sand settings live alongside the global grains tree so a
+// fresh `make install` doesn't have to plant anything in $HOME — the
+// file is created lazily on first `sand config <key> <value>`.
+let CONFIG_NAME = "sand-config.yaml"
+func userConfigFile() {
+  return path.join(home(), ".praia", CONFIG_NAME)
+}
+
+// Schema of recognized config keys → declared value type. Adding a
+// new setting means adding an entry here so `sand config <key>
+// <value>` validates input at the boundary and coerces booleans to
+// their real type before writing (otherwise `updateCheck: "false"`
+// — a string — round-trips as truthy when read back).
+let CONFIG_SCHEMA = {
+  author: "string",
+  license: "string",
+  updateCheck: "bool"
+}
+// Iteration order from `keys()` follows insertion order, so this list
+// is deterministic for help output.
+let CONFIG_KEYS = keys(CONFIG_SCHEMA)
+func isValidConfigKey(k) {
+  return CONFIG_SCHEMA.has(k)
+}
+func configKeyType(k) {
+  return CONFIG_SCHEMA[k]
+}
+
+func readUserConfig() {
+  let p = userConfigFile()
+  if (!fs.exists(p)) { return {} }
+  let content = fs.read(p)
+  if (len(content.strip()) == 0) { return {} }
+  let data = yaml.parse(content)
+  if (!data || type(data) != "map") { return {} }
+  return data
+}
+
+// Returns true unless the user has explicitly disabled the update
+// check. Defaults to true (the historical behaviour) when the key is
+// absent or unreadable.
+func updateCheckEnabled() {
+  let cfg = readUserConfig()
+  let v = cfg.updateCheck
+  if (v == nil) { return true }
+  // Tolerate yaml that round-tripped as a string ("false") — for
+  // hand-edited config files. cmdConfig set coerces to real bools.
+  if (type(v) == "string") {
+    let lower = v.lower()
+    if (lower == "false" || lower == "0" || lower == "no") { return false }
+    return true
+  }
+  return v
+}
+
+func writeUserConfig(cfg) {
+  // Create ~/.praia/ on demand. ext_grains/ may not exist yet (the
+  // user might `sand config author "..."` before ever installing a
+  // global grain), so we make .praia/ directly rather than relying
+  // on ensureDir(globalGrainsDir()).
+  let praiaDir = path.join(home(), ".praia")
+  ensureDir(praiaDir)
+  let lines = ""
+  let ks = keys(cfg)
+  for (k in ks) {
+    if (cfg[k] == nil) { continue }
+    lines = lines + "%{yaml.stringify(k)}: %{yaml.stringify(cfg[k])}\n"
+  }
+  fs.write(userConfigFile(), lines)
+}
+
 // User-global bindir: ~/.praia/bin/. Mirrors userGlobalDir() — same
 // directory tree, so wrappers for user-scope grains land next to the
 // grains they wrap.
@@ -100,8 +171,11 @@ func ensureDir(dir) {
 export {
   SAND_VERSION, SAND_REPO, SAND_REPO_URL,
   MANIFEST_NAME, LOCK_NAME, DEFAULT_MAIN, EXT_GRAINS_DIR,
+  CONFIG_NAME, CONFIG_KEYS, CONFIG_SCHEMA,
   home, globalGrainsDir, systemGlobalDir, userGlobalDir, globalLockFile,
   localGrainsDir, localLockFile, ensureDir,
   userBinDir, systemBinDir, globalBinDir,
+  userConfigFile, readUserConfig, writeUserConfig, isValidConfigKey,
+  configKeyType, updateCheckEnabled,
   isAllowedSandSource
 }

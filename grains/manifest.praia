@@ -104,7 +104,17 @@ func write(dir, m) {
     lines = lines + "description: %{yaml.stringify(m.description)}\n"
   }
   if (has(m, "author")) {
-    lines = lines + "author: %{yaml.stringify(m.author)}\n"
+    // Always emit the field — but write empty values as bare `author: `
+    // rather than `author: ""`, so a freshly-init'd grain.yaml has a
+    // clean placeholder the user can fill in (instead of a literal
+    // pair of quotes they have to delete first). Note: empty strings
+    // are truthy in Praia, so the check has to look at length.
+    let a = m.author
+    if (a != nil && type(a) == "string" && len(a) > 0) {
+      lines = lines + "author: %{yaml.stringify(a)}\n"
+    } else {
+      lines = lines + "author: \n"
+    }
   }
   if (has(m, "license") && m.license) {
     lines = lines + "license: %{yaml.stringify(m.license)}\n"
@@ -133,12 +143,15 @@ func write(dir, m) {
   fs.write(filepath, lines)
 }
 
-func create(name) {
+func create(name, author = nil) {
+  // `author` is always present as a key — write() emits it as either
+  // `author: <value>` or bare `author: ` (no `""`) so the field acts
+  // as a placeholder the user can fill in.
   return {
     name: name,
     version: "0.1.0",
     description: "A tiny sand grain on a large beach",
-    author: "Unknown",
+    author: author,
     license: "MIT",
     main: config.DEFAULT_MAIN,
     dependencies: {}
