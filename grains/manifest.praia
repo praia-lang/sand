@@ -41,15 +41,32 @@ func isValidBinPath(p) {
   return isValidMainPath(p)
 }
 
+// Allow-list of recognized platforms. Anything outside this set
+// is a typo or a (currently) unsupported target — reject at write
+// time so the author sees the problem before users do. Future
+// platforms get added here on demand; the bar to extend is one
+// line in this file.
+let ALLOWED_PLATFORMS = ["darwin", "linux", "windows", "freebsd"]
+
 // `prebuilt:` keys identify a target platform. Format:
 // `<platform>-<arch>`, e.g. `darwin-arm64`, `linux-x86_64`,
-// `linux-aarch64`. Also accept the special `darwin-universal`
-// case (lipo'd Mach-O). The regex is intentionally narrow —
-// we never want a hand-edited grain.yaml to smuggle path
-// separators or shell metachars through this key.
+// `linux-aarch64`, plus the `darwin-universal` lipo'd case.
+// The platform token must be in `ALLOWED_PLATFORMS`; the arch
+// portion can be any lowercase alphanumeric/underscore string
+// (which catches what `uname -m` returns on supported targets:
+// x86_64, arm64, aarch64, riscv64, …).
 func isValidPlatformKey(k) {
   if (!k || type(k) != "string") { return false }
-  return k.test("^[a-z]+-[a-z0-9_]+$")
+  let hy = k.indexOf("-")
+  if (hy <= 0 || hy >= len(k) - 1) { return false }
+  let plat = k.slice(0, hy)
+  let arch = k.slice(hy + 1, len(k))
+  let known = false
+  for (p in ALLOWED_PLATFORMS) {
+    if (p == plat) { known = true }
+  }
+  if (!known) { return false }
+  return arch.test("^[a-z0-9_]+$")
 }
 
 // `prebuilt:` URLs MUST be https. Without that constraint a
@@ -58,9 +75,26 @@ func isValidPlatformKey(k) {
 // check fires (defense-in-depth — we still verify sha256, but
 // https adds transport integrity). file:// is forbidden too:
 // a `prebuilt:` entry should be reproducible from anywhere.
+//
+// We also parse the URL with `url.parse` and require a non-empty,
+// non-dot-only host — that catches typos like `"https://"`,
+// `"https://..."`, or `"https:// "` that the prefix check alone
+// would happily accept. Path emptiness is fine (some CDN URLs
+// have query-string only); only host is load-bearing.
 func isValidPrebuiltUrl(u) {
   if (!u || type(u) != "string") { return false }
-  return u.startsWith("https://")
+  if (!u.startsWith("https://")) { return false }
+  let p = url.parse(u)
+  if (!p || p.scheme != "https") { return false }
+  let h = p.host
+  if (!h || type(h) != "string" || len(h) == 0) { return false }
+  // Reject host of just dots (".", "..", "...", etc.). These parse
+  // but resolve nowhere.
+  let nonDot = false
+  for (i in 0..len(h)) {
+    if (h.slice(i, i + 1) != ".") { nonDot = true }
+  }
+  return nonDot
 }
 
 // Subresource-integrity-style: `sha256-<64 lowercase hex chars>`.
@@ -184,7 +218,11 @@ func write(dir, m) {
     lines = lines + "main: %{yaml.stringify(m.main)}\n"
   }
   if (has(m, "bin") && m.bin) {
-    let binKeys = keys(m.bin)
+    // sort() the keys — `keys()` returns hash order, not insertion
+    // order, so without this two write calls on the same manifest
+    // can produce different byte streams. Stable output keeps git
+    // diffs clean and lets sand detect "no change" easily.
+    let binKeys = sort(keys(m.bin))
     if (len(binKeys) > 0) {
       lines = lines + "bin:\n"
       for (k in binKeys) {
@@ -198,7 +236,7 @@ func write(dir, m) {
   // entry — an empty prebuilt: with no children parses back as
   // nil, which we'd just have to special-case on the read side.
   if (has(m, "prebuilt") && m.prebuilt) {
-    let pbKeys = keys(m.prebuilt)
+    let pbKeys = sort(keys(m.prebuilt))
     if (len(pbKeys) > 0) {
       lines = lines + "prebuilt:\n"
       for (k in pbKeys) {
@@ -211,7 +249,7 @@ func write(dir, m) {
   }
   lines = lines + "dependencies:\n"
   if (has(m, "dependencies") && m.dependencies) {
-    let depKeys = keys(m.dependencies)
+    let depKeys = sort(keys(m.dependencies))
     if (len(depKeys) > 0) {
       for (k in depKeys) {
         lines = lines + "  %{yaml.stringify(k)}: %{yaml.stringify(m.dependencies[k])}\n"

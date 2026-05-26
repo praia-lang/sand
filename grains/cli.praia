@@ -77,6 +77,20 @@ func parseFlags(args) {
            rest: rest }
 }
 
+// Reject combinations of flags that contradict each other before
+// any side-effecting work happens. Today the only conflicting
+// pair is --build-from-source + --prebuilt-only: the former says
+// "ignore prebuilt entries", the latter says "fail if there isn't
+// one" — there's no consistent way to honour both. Without this
+// gate, --build-from-source silently wins inside installGrain and
+// the user never learns their CLI was self-contradictory.
+func validateFlags(flags) {
+  if (flags.buildFromSource && flags.prebuiltOnly) {
+    printer.error("--build-from-source and --prebuilt-only are mutually exclusive")
+    sys.exit(1)
+  }
+}
+
 func getTargetDir(isGlobal) {
   if (isGlobal) {
     return config.globalGrainsDir()
@@ -818,6 +832,7 @@ func installFromLockFile(isGlobal, verbose = false, ignoreMissing = false, build
 
 func cmdInstall(args) {
   let flags = parseFlags(args)
+  validateFlags(flags)
 
   if (len(flags.rest) == 0) {
     try {
@@ -843,6 +858,7 @@ func cmdInstall(args) {
 // is recorded in the lockfile.
 func cmdUpdate(args) {
   let flags = parseFlags(args)
+  validateFlags(flags)
   // `sand update sand` (no -g) auto-promotes to global. Sand is a
   // reserved name and can never be installed locally, so demanding
   // the user remember `-g` for this specific operation is just
@@ -1035,6 +1051,7 @@ func cmdUpdate(args) {
 // may be transitive dependencies the user can't see in grain.yaml).
 func cmdLock(args) {
   let flags = parseFlags(args)
+  validateFlags(flags)
 
   if (flags.global) {
     printer.error("'sand lock' has no global mode (lockfile is per-project)")

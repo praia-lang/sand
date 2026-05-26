@@ -19,9 +19,21 @@
 // (sys.platform + "uname -m"). One source of truth across the
 // stack so the URL key, the downloaded binary, and the runtime
 // loader all line up.
+//
+// `uname -m` doesn't exist on Windows, where Praia doesn't run
+// today — but a try/catch costs nothing and means a future
+// Windows port doesn't hard-fail in resolveEntry the first time
+// sand runs against a grain with no `windows-*` prebuilt entry.
+// The "-unknown" sentinel naturally fails to match any platform
+// key, so the caller falls back to source as designed.
 func platformKey() {
     let plat = sys.platform
-    let arch = sys.exec(["uname", "-m"]).stdout.strip()
+    let arch = "unknown"
+    try {
+        let r = sys.exec(["uname", "-m"])
+        if (r && r.stdout) { arch = r.stdout.strip() }
+    } catch (e) {}
+    if (!arch || len(arch) == 0) { arch = "unknown" }
     return plat + "-" + arch
 }
 
@@ -61,6 +73,12 @@ func installEntry(entry, stageDir, verbose) {
 
     let res = nil
     try {
+        // http.get follows 3xx redirects by default (up to 10
+        // hops, see DOCUMENTATION.md), so by the time we see a
+        // status here it's the final response in the chain. The
+        // <200 / >=300 guard then catches every error case
+        // (4xx/5xx, or a 3xx that survived because the user
+        // explicitly disabled follow in a future config knob).
         res = http.get(url)
     } catch (e) {
         throw "prebuilt fetch failed for %{url}: %{e}"
