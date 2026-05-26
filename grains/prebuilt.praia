@@ -1,0 +1,142 @@
+// Prebuilt-binary distribution for plugin grains.
+//
+// A grain with native code can publish per-platform binaries to a
+// hosting target of its choice (typically GitHub Releases) and
+// declare URL + sha256 in grain.yaml under a `prebuilt:` block.
+// At install time sand picks the entry matching the user's
+// `<platform>-<arch>`, downloads, verifies the hash, and drops the
+// binary into the grain's `plugins/` directory — so the existing
+// loader code in each grain's `main.praia` finds it unchanged.
+//
+// On a miss (unsupported platform, missing block, or
+// --build-from-source) the caller falls back to today's clone +
+// user-runs-make path. On a fetch failure or hash mismatch we
+// throw — broken or tampered binaries should NOT degrade silently
+// to source.
+
+// "darwin-arm64", "linux-x86_64", "linux-aarch64" — matches the
+// pattern each plugin grain's main.praia loader already uses
+// (sys.platform + "uname -m"). One source of truth across the
+// stack so the URL key, the downloaded binary, and the runtime
+// loader all line up.
+//
+// `uname -m` doesn't exist on Windows, where Praia doesn't run
+// today — but a try/catch costs nothing and means a future
+// Windows port doesn't hard-fail in resolveEntry the first time
+// sand runs against a grain with no `windows-*` prebuilt entry.
+// The "-unknown" sentinel naturally fails to match any platform
+// key, so the caller falls back to source as designed.
+func platformKey() {
+    let plat = sys.platform
+    let arch = "unknown"
+    try {
+        let r = sys.exec(["uname", "-m"])
+        if (r && r.stdout) { arch = r.stdout.strip() }
+    } catch (e) {}
+    if (!arch || len(arch) == 0) { arch = "unknown" }
+    return plat + "-" + arch
+}
+
+// Pick the entry in `m.prebuilt` that matches this machine.
+// darwin gets a `darwin-universal` fallback so a lipo'd Mach-O
+// can serve both x86_64 and arm64 from one URL — handy for
+// authors who can ship one fat binary instead of two slim ones.
+// Returns the entry map or nil if no candidate matches.
+func resolveEntry(m) {
+    if (!m || !m.prebuilt) { return nil }
+    let key = platformKey()
+    if (m.prebuilt[key]) { return m.prebuilt[key] }
+    if (sys.platform == "darwin" && m.prebuilt["darwin-universal"]) {
+        return m.prebuilt["darwin-universal"]
+    }
+    return nil
+}
+
+// Compute the sha256 hash of the body in the same prefixed format
+// the lockfile uses ("sha256-<hex>"). Kept here next to verify so
+// the two stay tied — never let the format drift.
+func _hashBody(body) {
+    return "sha256-" + crypto.sha256(body)
+}
+
+// Download `entry.url`, verify against `entry.integrity`, and
+// write the result into `stageDir/plugins/<basename(url)>`.
+// Returns true so the caller knows a binary landed; throws on any
+// failure along the way.
+//
+// Returning the destination path would also be useful for verbose
+// logs, but the caller already knows the rules (basename of URL
+// under `plugins/`) so the bool keeps the API tiny.
+func installEntry(entry, stageDir, verbose) {
+    let assetUrl = entry.url
+    let expected = entry.integrity
+
+    let res = nil
+    try {
+        // http.get follows 3xx redirects by default (up to 10
+        // hops, see DOCUMENTATION.md), so by the time we see a
+        // status here it's the final response in the chain. The
+        // <200 / >=300 guard then catches every error case
+        // (4xx/5xx, or a 3xx that survived because the user
+        // explicitly disabled follow in a future config knob).
+        res = http.get(assetUrl)
+    } catch (e) {
+        throw "prebuilt fetch failed for %{assetUrl}: %{e}"
+    }
+    if (!res || res.status < 200 || res.status >= 300) {
+        let s = "?"
+        if (res) { s = str(res.status) }
+        throw "prebuilt fetch failed for %{assetUrl}: HTTP %{s}"
+    }
+    let body = res.body
+
+    let actual = _hashBody(body)
+    if (actual != expected) {
+        throw "prebuilt integrity mismatch for %{assetUrl}: expected %{expected}, got %{actual}"
+    }
+
+    let pluginsDir = path.join(stageDir, "plugins")
+    if (!fs.exists(pluginsDir)) { fs.mkdir(pluginsDir) }
+    // Strip the query string + fragment before basenaming — a
+    // presigned-S3 release asset URL ends in
+    // `…/curses.dylib?X-Amz-Signature=…`, and a naive
+    // path.basename(url) would land that whole tail on disk as
+    // part of the filename. The runtime loader (looking for the
+    // plain `curses.dylib`) would never find it. Parse first,
+    // basename the path component, fall back to the original URL
+    // if parse somehow returns nothing usable.
+    let basename = nil
+    let parsed = nil
+    try { parsed = url.parse(assetUrl) } catch (e) {}
+    if (parsed && parsed.path && len(parsed.path) > 0) {
+        basename = path.basename(parsed.path)
+    }
+    if (!basename || len(basename) == 0) {
+        basename = path.basename(assetUrl)
+    }
+    let destPath = path.join(pluginsDir, basename)
+    fs.write(destPath, body)
+    // 0o755 — readable + executable for everyone. Plain dlopen
+    // doesn't require the exec bit, but tools like `file(1)` and
+    // some loaders expect it on shared libs, and matching the bit
+    // pattern of locally-built `.dylib`/`.so` artifacts keeps
+    // integrity diffs against a from-source install minimal.
+    fs.chmod(destPath, 0o755)
+
+    if (verbose) {
+        print("  prebuilt: %{basename} ← %{assetUrl}")
+    }
+    return true
+}
+
+// Caller-facing one-shot: resolve + install. Returns true if a
+// binary was placed, false if no entry matched (caller falls back
+// to source). Errors during fetch/verify propagate so the user
+// sees them.
+func fetchAndStage(m, stageDir, verbose) {
+    let entry = resolveEntry(m)
+    if (!entry) { return false }
+    return installEntry(entry, stageDir, verbose)
+}
+
+export { platformKey, resolveEntry, installEntry, fetchAndStage }
