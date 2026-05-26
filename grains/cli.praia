@@ -4,6 +4,7 @@ use "./bin"
 use "./git"
 use "./registry"
 use "./integrity"
+use "./prebuilt"
 use "./printer"
 use "./updateCheck"
 use "progress"
@@ -37,17 +38,22 @@ func printUsage() {
   print("  Use --global to install to ~/.praia/ext_grains/ instead.")
   print("  Use --verbose for detailed output (shows git commands, etc.)")
   print("  Use --ignore-missing-deps to keep going when a transitive dep fails.")
+  print("  Use --build-from-source to ignore prebuilt: binaries and clone+build.")
+  print("  Use --prebuilt-only to fail if no prebuilt is published for your platform.")
   print("")
   print("  Grains with a `bin:` section in grain.yaml install CLI wrappers")
   print("  to ~/.praia/bin/ (user) or /usr/local/bin/ (root) on --global.")
 }
 
-// Parse flags from args, returns {global, verbose, ignoreMissing, rest}
+// Parse flags from args, returns {global, verbose, ignoreMissing,
+// yes, buildFromSource, prebuiltOnly, rest}.
 func parseFlags(args) {
   let isGlobal = false
   let isVerbose = false
   let ignoreMissing = false
   let yes = false
+  let buildFromSource = false
+  let prebuiltOnly = false
   let rest = []
   for (arg in args) {
     if (arg == "--global" || arg == "-g") {
@@ -58,12 +64,17 @@ func parseFlags(args) {
       ignoreMissing = true
     } elif (arg == "--yes" || arg == "-y") {
       yes = true
+    } elif (arg == "--build-from-source") {
+      buildFromSource = true
+    } elif (arg == "--prebuilt-only") {
+      prebuiltOnly = true
     } else {
       push(rest, arg)
     }
   }
   return { global: isGlobal, verbose: isVerbose, ignoreMissing: ignoreMissing,
-           yes: yes, rest: rest }
+           yes: yes, buildFromSource: buildFromSource, prebuiltOnly: prebuiltOnly,
+           rest: rest }
 }
 
 func getTargetDir(isGlobal) {
@@ -262,10 +273,22 @@ func cmdInit(args) {
 // when foo is already installed — the user has to remove first, the
 // long-standing safety guard.
 //
+// `buildFromSource` (bool): if true, ignore any `prebuilt:` block
+// and clone+build via the existing source path. Same behavior the
+// installer had before the prebuilt feature landed — useful for
+// users who want to audit/patch native code locally.
+//
+// `prebuiltOnly` (bool): if true and the grain has native code
+// (a `plugins/` dir) but no matching `prebuilt:` entry, fail the
+// install rather than silently degrading to "you also need a
+// toolchain". Aimed at users without g++ who'd rather see a clean
+// "this platform isn't published" message than a confusing make
+// error later.
+//
 // On failure this function ROLLS BACK its own state and re-throws. The
 // outermost (CLI) caller is responsible for catching the throw and exiting
 // with a non-zero code.
-func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {}, preserveInstalledDate = nil, ignoreMissing = false, pin = nil, expectedIntegrity = nil, force = false) {
+func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {}, preserveInstalledDate = nil, ignoreMissing = false, pin = nil, expectedIntegrity = nil, force = false, buildFromSource = false, prebuiltOnly = false) {
   let parsed = git.parseSpec(spec)
   let name = parsed.name
   ensure (manifest.isValidName(name)) else {
@@ -433,6 +456,38 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
       throw "Entry file '%{mainFile}' not found in grain repository"
     }
 
+    // Prebuilt-binary fetch. If the manifest has a `prebuilt:`
+    // block and we can match this machine's <platform>-<arch>,
+    // download the binary into cloneDir/plugins/<basename> BEFORE
+    // the stage copy. The integrity hash + atomic swap downstream
+    // then cover the prebuilt the same way they cover source
+    // files — no separate rollback path needed. On a fetch or
+    // hash-mismatch error we let the throw propagate; the outer
+    // catch cleans up the cloneDir and prior install via bakDir.
+    //
+    // --build-from-source skips this entirely. --prebuilt-only
+    // turns "no matching entry but we have a plugins/ dir" into a
+    // hard error rather than letting the user discover hours later
+    // that they were supposed to run `make`.
+    if (grainManifest && !buildFromSource) {
+      if (verbose) { printer.info("Checking for prebuilt binary...") }
+      else { spin.tick("Checking for prebuilt binary...") }
+      let installed = false
+      try {
+        installed = prebuilt.fetchAndStage(grainManifest, cloneDir, verbose)
+      } catch (err) {
+        spin.done()
+        throw err
+      }
+      if (!installed && prebuiltOnly) {
+        let hasPluginsDir = fs.exists(path.join(cloneDir, "plugins"))
+        if (hasPluginsDir) {
+          spin.done()
+          throw "No prebuilt binary published for %{prebuilt.platformKey()} in '%{name}'; rerun without --prebuilt-only to build from source"
+        }
+      }
+    }
+
     // Ensure target directory exists
     config.ensureDir(targetDir)
 
@@ -595,14 +650,19 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
         }
         if (!registry.get(lockFile, depName)) {
           printer.info("  Installing dependency: %{depName}")
+          // Transitive deps inherit the caller's prebuilt/source
+          // preferences. If the user said --build-from-source for
+          // the top-level grain, transitive deps with prebuilts
+          // would silently sneak past that intent — pass the
+          // flags through so the intent is uniform.
           if (ignoreMissing) {
             try {
-              installGrain(str(depSource), isGlobal, verbose, false, visited, nil, ignoreMissing)
+              installGrain(str(depSource), isGlobal, verbose, false, visited, nil, ignoreMissing, nil, nil, false, buildFromSource, prebuiltOnly)
             } catch (e) {
               printer.warn("  Failed to install '%{depName}': %{e} (continuing — --ignore-missing-deps)")
             }
           } else {
-            installGrain(str(depSource), isGlobal, verbose, false, visited, nil, ignoreMissing)
+            installGrain(str(depSource), isGlobal, verbose, false, visited, nil, ignoreMissing, nil, nil, false, buildFromSource, prebuiltOnly)
           }
         }
       }
@@ -692,7 +752,7 @@ func installGrain(spec, isGlobal, verbose = false, addToDeps = true, visited = {
   }
 }
 
-func installFromLockFile(isGlobal, verbose = false, ignoreMissing = false) {
+func installFromLockFile(isGlobal, verbose = false, ignoreMissing = false, buildFromSource = false, prebuiltOnly = false) {
   let lockFile = getLockFile(isGlobal)
   let lock = registry.load(lockFile)
   let grainKeys = keys(lock.grains)
@@ -744,7 +804,7 @@ func installFromLockFile(isGlobal, verbose = false, ignoreMissing = false) {
       // these fields fall back to a version-driven install (no pin)
       // — the user is told indirectly via the lack of a checksum
       // line when their next install regenerates the lockfile.
-      installGrain(spec, isGlobal, verbose, false, {}, preservedDate, ignoreMissing, info.commit, info.integrity)
+      installGrain(spec, isGlobal, verbose, false, {}, preservedDate, ignoreMissing, info.commit, info.integrity, false, buildFromSource, prebuiltOnly)
       installed = installed + 1
     }
   }
@@ -761,7 +821,7 @@ func cmdInstall(args) {
 
   if (len(flags.rest) == 0) {
     try {
-      installFromLockFile(flags.global, flags.verbose, flags.ignoreMissing)
+      installFromLockFile(flags.global, flags.verbose, flags.ignoreMissing, flags.buildFromSource, flags.prebuiltOnly)
     } catch (e) {
       printer.error("Install failed: %{e}")
       sys.exit(1)
@@ -769,7 +829,7 @@ func cmdInstall(args) {
   } else {
     for (spec in flags.rest) {
       try {
-        installGrain(spec, flags.global, flags.verbose, true, {}, nil, flags.ignoreMissing)
+        installGrain(spec, flags.global, flags.verbose, true, {}, nil, flags.ignoreMissing, nil, nil, false, flags.buildFromSource, flags.prebuiltOnly)
       } catch (e) {
         printer.error("Install failed: %{e}")
         sys.exit(1)
@@ -865,7 +925,7 @@ func cmdUpdate(args) {
       // the old bug. `force=true` opts past the "already installed"
       // refuse check, which is otherwise the right behavior for
       // plain `sand install`.
-      installGrain(spec, flags.global, flags.verbose, false, {}, nil, flags.ignoreMissing, nil, nil, true)
+      installGrain(spec, flags.global, flags.verbose, false, {}, nil, flags.ignoreMissing, nil, nil, true, flags.buildFromSource, flags.prebuiltOnly)
     } catch (e) {
       // installGrain rolled back its own state — destDir + any
       // wrappers it had planted. The OLD wrappers (and old
@@ -1013,7 +1073,7 @@ func cmdLock(args) {
       if (fs.exists(grainDir)) { fs.remove(grainDir) }
       if (lockEntry) { registry.remove(lockFile, depName) }
       try {
-        installGrain(depSource, false, flags.verbose, false, {}, nil, flags.ignoreMissing)
+        installGrain(depSource, false, flags.verbose, false, {}, nil, flags.ignoreMissing, nil, nil, false, flags.buildFromSource, flags.prebuiltOnly)
       } catch (e) {
         printer.error("Lock failed: %{e}")
         sys.exit(1)

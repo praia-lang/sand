@@ -41,6 +41,37 @@ func isValidBinPath(p) {
   return isValidMainPath(p)
 }
 
+// `prebuilt:` keys identify a target platform. Format:
+// `<platform>-<arch>`, e.g. `darwin-arm64`, `linux-x86_64`,
+// `linux-aarch64`. Also accept the special `darwin-universal`
+// case (lipo'd Mach-O). The regex is intentionally narrow —
+// we never want a hand-edited grain.yaml to smuggle path
+// separators or shell metachars through this key.
+func isValidPlatformKey(k) {
+  if (!k || type(k) != "string") { return false }
+  return k.test("^[a-z]+-[a-z0-9_]+$")
+}
+
+// `prebuilt:` URLs MUST be https. Without that constraint a
+// malicious or misconfigured grain could fetch over plain http
+// where a network attacker can swap the binary before the hash
+// check fires (defense-in-depth — we still verify sha256, but
+// https adds transport integrity). file:// is forbidden too:
+// a `prebuilt:` entry should be reproducible from anywhere.
+func isValidPrebuiltUrl(u) {
+  if (!u || type(u) != "string") { return false }
+  return u.startsWith("https://")
+}
+
+// Subresource-integrity-style: `sha256-<64 lowercase hex chars>`.
+// Matches the format integrity.compute() already produces for the
+// installed-tree hash, so the lockfile and the prebuilt block
+// share one canonical shape.
+func isValidIntegrity(s) {
+  if (!s || type(s) != "string") { return false }
+  return s.test("^sha256-[0-9a-f]{64}$")
+}
+
 func read(dir) {
   let filepath = path.join(dir, config.MANIFEST_NAME)
   ensure (fs.exists(filepath)) else {
@@ -83,6 +114,33 @@ func read(dir) {
       }
       ensure (isValidBinPath(m.bin[k])) else {
         throw "Invalid bin path for '%{k}' in %{filepath}: '%{m.bin[k]}' (must be a relative .praia file, no '..')"
+      }
+    }
+  }
+  // `prebuilt:` declares per-platform binaries to download instead
+  // of building from source. Each value is itself a map with `url`
+  // (https) and `integrity` (sha256-<hex>). Reject the whole
+  // manifest if any entry is malformed — a typo in the URL or hash
+  // is the kind of bug that's better caught at install time than
+  // after the user has chmod'd a wrong binary into place.
+  if (has(m, "prebuilt") && m.prebuilt) {
+    ensure (type(m.prebuilt) == "map") else {
+      throw "Invalid prebuilt in %{filepath}: expected a mapping"
+    }
+    let pbKeys = keys(m.prebuilt)
+    for (k in pbKeys) {
+      ensure (isValidPlatformKey(k)) else {
+        throw "Invalid prebuilt platform key '%{k}' in %{filepath} (must match <platform>-<arch>, e.g. darwin-arm64, linux-x86_64)"
+      }
+      let entry = m.prebuilt[k]
+      ensure (type(entry) == "map") else {
+        throw "Invalid prebuilt entry '%{k}' in %{filepath}: expected a mapping with `url` and `integrity`"
+      }
+      ensure (isValidPrebuiltUrl(entry.url)) else {
+        throw "Invalid prebuilt URL for '%{k}' in %{filepath} (must be https://): '%{entry.url}'"
+      }
+      ensure (isValidIntegrity(entry.integrity)) else {
+        throw "Invalid prebuilt integrity for '%{k}' in %{filepath} (must be sha256-<64 hex chars>): '%{entry.integrity}'"
       }
     }
   }
@@ -131,6 +189,23 @@ func write(dir, m) {
       lines = lines + "bin:\n"
       for (k in binKeys) {
         lines = lines + "  %{yaml.stringify(k)}: %{yaml.stringify(m.bin[k])}\n"
+      }
+    }
+  }
+  // `prebuilt:` round-trip. Each entry is itself a mapping; emit
+  // url + integrity in a fixed order so a write/read/write cycle
+  // is byte-stable. Only emit when the block has at least one
+  // entry — an empty prebuilt: with no children parses back as
+  // nil, which we'd just have to special-case on the read side.
+  if (has(m, "prebuilt") && m.prebuilt) {
+    let pbKeys = keys(m.prebuilt)
+    if (len(pbKeys) > 0) {
+      lines = lines + "prebuilt:\n"
+      for (k in pbKeys) {
+        let e = m.prebuilt[k]
+        lines = lines + "  %{yaml.stringify(k)}:\n"
+        lines = lines + "    url: %{yaml.stringify(e.url)}\n"
+        lines = lines + "    integrity: %{yaml.stringify(e.integrity)}\n"
       }
     }
   }
@@ -185,4 +260,8 @@ func removeDep(dir, name) {
   }
 }
 
-export { read, write, create, addDep, removeDep, isValidName, isValidMainPath, isValidBinName, isValidBinPath }
+export {
+  read, write, create, addDep, removeDep,
+  isValidName, isValidMainPath, isValidBinName, isValidBinPath,
+  isValidPlatformKey, isValidPrebuiltUrl, isValidIntegrity
+}
