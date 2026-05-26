@@ -68,7 +68,7 @@ func _hashBody(body) {
 // logs, but the caller already knows the rules (basename of URL
 // under `plugins/`) so the bool keeps the API tiny.
 func installEntry(entry, stageDir, verbose) {
-    let url = entry.url
+    let assetUrl = entry.url
     let expected = entry.integrity
 
     let res = nil
@@ -79,25 +79,41 @@ func installEntry(entry, stageDir, verbose) {
         // <200 / >=300 guard then catches every error case
         // (4xx/5xx, or a 3xx that survived because the user
         // explicitly disabled follow in a future config knob).
-        res = http.get(url)
+        res = http.get(assetUrl)
     } catch (e) {
-        throw "prebuilt fetch failed for %{url}: %{e}"
+        throw "prebuilt fetch failed for %{assetUrl}: %{e}"
     }
     if (!res || res.status < 200 || res.status >= 300) {
         let s = "?"
         if (res) { s = str(res.status) }
-        throw "prebuilt fetch failed for %{url}: HTTP %{s}"
+        throw "prebuilt fetch failed for %{assetUrl}: HTTP %{s}"
     }
     let body = res.body
 
     let actual = _hashBody(body)
     if (actual != expected) {
-        throw "prebuilt integrity mismatch for %{url}: expected %{expected}, got %{actual}"
+        throw "prebuilt integrity mismatch for %{assetUrl}: expected %{expected}, got %{actual}"
     }
 
     let pluginsDir = path.join(stageDir, "plugins")
     if (!fs.exists(pluginsDir)) { fs.mkdir(pluginsDir) }
-    let basename = path.basename(url)
+    // Strip the query string + fragment before basenaming — a
+    // presigned-S3 release asset URL ends in
+    // `…/curses.dylib?X-Amz-Signature=…`, and a naive
+    // path.basename(url) would land that whole tail on disk as
+    // part of the filename. The runtime loader (looking for the
+    // plain `curses.dylib`) would never find it. Parse first,
+    // basename the path component, fall back to the original URL
+    // if parse somehow returns nothing usable.
+    let basename = nil
+    let parsed = nil
+    try { parsed = url.parse(assetUrl) } catch (e) {}
+    if (parsed && parsed.path && len(parsed.path) > 0) {
+        basename = path.basename(parsed.path)
+    }
+    if (!basename || len(basename) == 0) {
+        basename = path.basename(assetUrl)
+    }
     let destPath = path.join(pluginsDir, basename)
     fs.write(destPath, body)
     // 0o755 — readable + executable for everyone. Plain dlopen
@@ -108,7 +124,7 @@ func installEntry(entry, stageDir, verbose) {
     fs.chmod(destPath, 0o755)
 
     if (verbose) {
-        print("  prebuilt: %{basename} ← %{url}")
+        print("  prebuilt: %{basename} ← %{assetUrl}")
     }
     return true
 }
