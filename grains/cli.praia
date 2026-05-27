@@ -1007,6 +1007,7 @@ func cmdUpdate(args) {
       ensure (manifest.isValidName(name)) else {
         printer.error("Invalid grain name: '%{name}'")
         sys.exit(1)
+        return   // unreachable; satisfies the ensure-terminator parse check
       }
       // synth lookup so `sand update sand` works after a fresh
       // `make install` (lockfile won't have a sand entry yet).
@@ -1063,6 +1064,7 @@ func cmdLock(args) {
   ensure (fs.exists(manifestPath)) else {
     printer.error("No %{config.MANIFEST_NAME} found in the current directory")
     sys.exit(1)
+    return
   }
 
   let m = manifest.read(cwd)
@@ -1210,12 +1212,14 @@ func cmdRemove(args) {
   ensure (len(flags.rest) > 0) else {
     printer.error("Usage: sand remove [--global] [--yes] <name>")
     sys.exit(1)
+    return
   }
 
   let name = flags.rest[0]
   ensure (manifest.isValidName(name)) else {
     printer.error("Invalid grain name: '%{name}'")
     sys.exit(1)
+    return
   }
   let targetDir = getTargetDir(flags.global)
   let lockFile = getLockFile(flags.global)
@@ -1304,6 +1308,7 @@ func cmdInfo(args) {
   ensure (len(flags.rest) > 0) else {
     printer.error("Usage: sand info <name>")
     sys.exit(1)
+    return
   }
 
   let name = flags.rest[0]
@@ -1364,6 +1369,7 @@ func cmdConfig(args) {
   ensure (config.isValidConfigKey(key)) else {
     printer.error("Unknown config key: '%{key}' (known keys: %{config.CONFIG_KEYS.join(", ")})")
     sys.exit(1)
+    return
   }
 
   if (len(rest) == 1) {
