@@ -67,9 +67,16 @@ func _hashBody(body) {
 // Returning the destination path would also be useful for verbose
 // logs, but the caller already knows the rules (basename of URL
 // under `plugins/`) so the bool keeps the API tiny.
-func installEntry(entry, stageDir, verbose) {
+//
+// `httpOpts` (optional) is passed straight to `http.get`. Production
+// callers leave it empty; tests pass `{blockPrivateHosts: false}` to
+// hit a local mock server. SSRF defaults stay on for the everyday
+// `sand install` path — refusing localhost is the right answer when
+// a manifest's prebuilt URL points at the developer's own machine.
+func installEntry(entry, stageDir, verbose, httpOpts) {
     let assetUrl = entry.url
     let expected = entry.integrity
+    if (httpOpts == nil) { httpOpts = {} }
 
     let res = nil
     try {
@@ -79,7 +86,7 @@ func installEntry(entry, stageDir, verbose) {
         // <200 / >=300 guard then catches every error case
         // (4xx/5xx, or a 3xx that survived because the user
         // explicitly disabled follow in a future config knob).
-        res = http.get(assetUrl)
+        res = http.get(assetUrl, httpOpts)
     } catch (e) {
         throw "prebuilt fetch failed for %{assetUrl}: %{e}"
     }
@@ -132,11 +139,11 @@ func installEntry(entry, stageDir, verbose) {
 // Caller-facing one-shot: resolve + install. Returns true if a
 // binary was placed, false if no entry matched (caller falls back
 // to source). Errors during fetch/verify propagate so the user
-// sees them.
-func fetchAndStage(m, stageDir, verbose) {
+// sees them. `httpOpts` is plumbed through to installEntry.
+func fetchAndStage(m, stageDir, verbose, httpOpts) {
     let entry = resolveEntry(m)
     if (!entry) { return false }
-    return installEntry(entry, stageDir, verbose)
+    return installEntry(entry, stageDir, verbose, httpOpts)
 }
 
 export { platformKey, resolveEntry, installEntry, fetchAndStage }
