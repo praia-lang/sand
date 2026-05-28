@@ -121,15 +121,52 @@ func clone(url, dest, verbose = false) {
   // Re-validate even though parseSpec already does — defense in depth
   // for callers that bypass parseSpec.
   if (!isValidUrl(url)) { throw "Invalid clone URL" }
-  let cmd = ["git", "clone"]
-  if (!verbose) { push(cmd, "--quiet") }
-  // -- ensures git treats the URL as positional, not an option, even
-  // if a future caller slips a string starting with `-` past validation.
-  push(cmd, "--")
-  push(cmd, url)
-  push(cmd, dest)
+
+  if (verbose) {
+    // Verbose path: stream live so the user actually sees progress
+    // (the prior sys.exec path buffered everything until git
+    // exited, which made a multi-second clone look like a hang).
+    //
+    // Three tricks layered together:
+    //   1. `sys.spawn` instead of `sys.exec` so we can read
+    //      output line-by-line as git produces it.
+    //   2. Wrap with `sh -c "... 2>&1"` because git writes
+    //      progress to stderr; spawn's `readLine()` reads stdout
+    //      only, so we merge the two streams in the shell.
+    //   3. `--progress` because git auto-detects stderr is a
+    //      pipe (not a TTY) and otherwise skips progress
+    //      reporting entirely. With it we get per-phase lines
+    //      (Cloning into / Counting / Compressing / Receiving /
+    //      Resolving), each separated by '\n'. Intra-phase CR
+    //      animation is lost — that needs character-level
+    //      streaming which isn't on the table here.
+    //
+    // The shell receives URL and dest as positional `$1`/`$2`
+    // rather than substituted into the script text, so there's
+    // no injection surface even if isValidUrl misses an edge.
+    // GIT_TERMINAL_PROMPT=0 fails fast on a credential prompt
+    // (private or expired-auth URL) — otherwise git would block
+    // on /dev/tty and the user would see a *real* hang.
+    let script = "exec env GIT_TERMINAL_PROMPT=0 git clone --progress -- \"$1\" \"$2\" 2>&1"
+    let proc = sys.spawn(["sh", "-c", script, "sh", url, dest])
+    let line = proc.readLine()
+    while (line != nil) {
+      print(line)
+      line = proc.readLine()
+    }
+    let code = proc.wait()
+    if (code != 0) {
+      throw "git clone failed (exit %{code})"
+    }
+    return
+  }
+
+  // Non-verbose: keep the buffered sys.exec path. Spinner ticks
+  // in the caller carry the UX; GIT_TERMINAL_PROMPT=0 still
+  // defends against a real auth-prompt hang.
+  let cmd = ["env", "GIT_TERMINAL_PROMPT=0",
+             "git", "clone", "--quiet", "--", url, dest]
   let r = sys.exec(cmd)
-  if (verbose && len(r.stderr.strip()) > 0) { print(r.stderr.strip()) }
   if (r.exitCode != 0) {
     let msg = r.stderr.strip()
     if (len(msg) == 0) { msg = r.stdout.strip() }
@@ -144,7 +181,11 @@ func checkout(dir, tag, verbose = false) {
   let attempts = [tag, "v%{tag}"]
   for (attempt in attempts) {
     if (!isValidRef(attempt)) { continue }
-    let cmd = ["git", "-C", dir, "checkout"]
+    // env GIT_TERMINAL_PROMPT=0 mirrors clone() — checkout
+    // shouldn't normally prompt, but the defense is uniform
+    // across every git invocation so no future code path can
+    // accidentally introduce an interactive hang.
+    let cmd = ["env", "GIT_TERMINAL_PROMPT=0", "git", "-C", dir, "checkout"]
     if (!verbose) { push(cmd, "--quiet") }
     push(cmd, attempt)
     let r = sys.exec(cmd)
@@ -182,7 +223,12 @@ func lsRemote(url, version) {
   let lastErr = nil
   for (ref in refs) {
     if (!isValidRef(ref)) { continue }
-    let r = sys.exec(["git", "ls-remote", "--quiet", "--exit-code", "--", url, ref])
+    // ls-remote hits the network — most likely place to trip
+    // a credential prompt on a private repo. GIT_TERMINAL_PROMPT=0
+    // makes that fail fast with a clean error rather than blocking
+    // on /dev/tty.
+    let r = sys.exec(["env", "GIT_TERMINAL_PROMPT=0",
+                      "git", "ls-remote", "--quiet", "--exit-code", "--", url, ref])
     if (r.exitCode == 0) {
       // Output is "<sha>\t<ref>\n..." — take the first line's SHA.
       let line = r.stdout.split("\n")[0]
@@ -206,7 +252,8 @@ func lsRemote(url, version) {
 // a moving target like a branch tip or "latest".
 func revParse(dir, ref = "HEAD") {
   if (!isValidRef(ref)) { throw "Invalid ref for rev-parse: %{ref}" }
-  let r = sys.exec(["git", "-C", dir, "rev-parse", ref])
+  let r = sys.exec(["env", "GIT_TERMINAL_PROMPT=0",
+                    "git", "-C", dir, "rev-parse", ref])
   if (r.exitCode != 0) {
     let msg = r.stderr.strip()
     if (len(msg) == 0) { msg = r.stdout.strip() }
